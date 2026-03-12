@@ -130,6 +130,13 @@ jobs:
           file l2tunnel.exe
           cd ../..
 
+      - name: Stage l2tunnel for NSIS
+        shell: bash
+        run: |
+          mkdir -p build/bin
+          cp lib/l2tunnel/l2tunnel.exe build/bin/l2tunnel.exe
+          ls -la build/bin/
+
       - name: Build Windows (amd64)
         run: wails build -platform windows/amd64 -nsis
 
