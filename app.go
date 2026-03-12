@@ -25,6 +25,7 @@ type App struct {
 	xboxMAC        string
 	status         AppStatus
 	tunnel         *l2tunnel.Tunnel
+	wsBridge       *l2tunnel.WSBridge
 	discoverCancel context.CancelFunc
 	currentLobby   *lobby.ServerLobby
 	pingTicker     *time.Ticker
@@ -128,6 +129,9 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 	if a.tunnel != nil {
 		a.tunnel.Stop()
+	}
+	if a.wsBridge != nil {
+		a.wsBridge.Stop()
 	}
 }
 
@@ -435,7 +439,7 @@ func (a *App) JoinLobby(code string) (*LobbyInfo, error) {
 	return &info, nil
 }
 
-// autoTunnel starts l2tunnel to the hub server for the given lobby
+// autoTunnel starts l2tunnel connected to the hub via WebSocket bridge
 func (a *App) autoTunnel(sl *lobby.ServerLobby) {
 	a.mu.RLock()
 	iface := a.status.Interface
@@ -447,16 +451,32 @@ func (a *App) autoTunnel(sl *lobby.ServerLobby) {
 		return
 	}
 
-	if sl.HubAddr == "" || sl.HubPort == 0 {
+	if sl.HubAddr == "" {
 		runtime.EventsEmit(a.ctx, "tunnel:skipped", "No hub relay address for this lobby")
 		return
 	}
 
 	go func() {
-		err := a.StartTunnel(iface, mac, "0.0.0.0", "0",
-			sl.HubAddr, fmt.Sprintf("%d", sl.HubPort))
+		// Build WebSocket URL for the relay
+		wsURL := fmt.Sprintf("wss://%s/relay?lobby=%s", sl.HubAddr, sl.ID)
+
+		// Start WebSocket bridge (creates local UDP port)
+		bridge, localAddr, err := l2tunnel.StartWSBridge(a.ctx, wsURL)
 		if err != nil {
-			runtime.EventsEmit(a.ctx, "error", fmt.Sprintf("Failed to connect tunnel: %v", err))
+			runtime.EventsEmit(a.ctx, "error", fmt.Sprintf("Failed to connect to relay: %v", err))
+			return
+		}
+
+		a.mu.Lock()
+		a.wsBridge = bridge
+		a.mu.Unlock()
+
+		// Start l2tunnel pointed at the local bridge port
+		err = a.StartTunnel(iface, mac, "0.0.0.0", "0",
+			"127.0.0.1", localAddr[len("127.0.0.1:"):])
+		if err != nil {
+			bridge.Stop()
+			runtime.EventsEmit(a.ctx, "error", fmt.Sprintf("Failed to start tunnel: %v", err))
 		}
 	}()
 }
@@ -486,6 +506,10 @@ func (a *App) LeaveLobby(id string) error {
 	if a.tunnel != nil {
 		a.tunnel.Stop()
 		a.tunnel = nil
+	}
+	if a.wsBridge != nil {
+		a.wsBridge.Stop()
+		a.wsBridge = nil
 	}
 	a.mu.Unlock()
 

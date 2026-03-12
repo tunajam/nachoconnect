@@ -9,13 +9,17 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
-// Server is the NachoConnect lobby/matchmaking server
+// Server is the NachoConnect lobby/matchmaking server with integrated WebSocket relay
 type Server struct {
 	mu          sync.RWMutex
 	lobbies     map[string]*ServerLobby
 	nextHubPort int
+	relayMu     sync.RWMutex
+	relayPeers  map[string]*RelayPeer
 }
 
 type ServerLobby struct {
@@ -64,10 +68,22 @@ type PingUpdateReq struct {
 	Ping    int    `json:"ping"`
 }
 
+// RelayPeer is a WebSocket peer in the relay
+type RelayPeer struct {
+	Conn     *websocket.Conn
+	LobbyID  string
+	LastSeen time.Time
+}
+
+var wsUpgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool { return true },
+}
+
 func NewServer() *Server {
 	return &Server{
 		lobbies:     make(map[string]*ServerLobby),
-		nextHubPort: 1338, // Start assigning hub ports from 1338 (1337 is the default hub)
+		nextHubPort: 1338,
+		relayPeers:  make(map[string]*RelayPeer),
 	}
 }
 
@@ -87,6 +103,7 @@ func main() {
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "version": "0.1.0"})
 	})
+	mux.HandleFunc("/relay", s.handleRelay)
 
 	// CORS middleware
 	handler := corsMiddleware(mux)
@@ -318,6 +335,65 @@ func (s *Server) handleGetLobby(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(l)
+}
+
+func (s *Server) handleRelay(w http.ResponseWriter, r *http.Request) {
+	lobbyID := r.URL.Query().Get("lobby")
+	conn, err := wsUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("WebSocket upgrade failed: %v", err)
+		return
+	}
+
+	key := conn.RemoteAddr().String()
+
+	s.relayMu.Lock()
+	s.relayPeers[key] = &RelayPeer{
+		Conn:     conn,
+		LobbyID:  lobbyID,
+		LastSeen: time.Now(),
+	}
+	count := len(s.relayPeers)
+	s.relayMu.Unlock()
+
+	log.Printf("relay peer connected: %s lobby=%s (total: %d)", key, lobbyID, count)
+
+	defer func() {
+		s.relayMu.Lock()
+		delete(s.relayPeers, key)
+		s.relayMu.Unlock()
+		conn.Close()
+		log.Printf("relay peer disconnected: %s", key)
+	}()
+
+	for {
+		msgType, data, err := conn.ReadMessage()
+		if err != nil {
+			break
+		}
+		if msgType != websocket.BinaryMessage {
+			continue
+		}
+
+		s.relayMu.Lock()
+		if p, ok := s.relayPeers[key]; ok {
+			p.LastSeen = time.Now()
+		}
+		s.relayMu.Unlock()
+
+		// Forward to all other peers in the same lobby
+		s.relayMu.RLock()
+		for peerKey, p := range s.relayPeers {
+			if peerKey == key {
+				continue
+			}
+			if lobbyID != "" && p.LobbyID != "" && p.LobbyID != lobbyID {
+				continue
+			}
+			_ = p.Conn.WriteMessage(websocket.BinaryMessage, data)
+		}
+		s.relayMu.RUnlock()
+	}
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
