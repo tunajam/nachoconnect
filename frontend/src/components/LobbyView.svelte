@@ -5,10 +5,6 @@
   export let lobby;
   const dispatch = createEventDispatcher();
 
-  let chatMessages = [
-    { sender: '🧀', message: `Welcome to ${lobby?.name || 'the lobby'}!`, time: now(), system: true },
-  ];
-  let chatInput = '';
   let copied = false;
   let players = lobby?.members || [];
   let tunnelStatus = 'connecting'; // connecting | connected | disconnected | reconnecting
@@ -20,24 +16,17 @@
     refreshInterval = setInterval(refreshLobby, 5000);
 
     if (window.runtime) {
-      window.runtime.EventsOn('chat:message', (msg) => {
-        chatMessages = [...chatMessages, msg];
-      });
       window.runtime.EventsOn('tunnel:connected', () => {
         tunnelStatus = 'connected';
-        addSystemMessage('Tunnel established 🟢');
       });
       window.runtime.EventsOn('tunnel:disconnected', () => {
         tunnelStatus = 'disconnected';
-        addSystemMessage('Tunnel disconnected ⚠️');
       });
       window.runtime.EventsOn('tunnel:reconnecting', (attempt) => {
         tunnelStatus = 'reconnecting';
-        addSystemMessage(`Reconnecting... (attempt ${attempt})`);
       });
       window.runtime.EventsOn('tunnel:skipped', (reason) => {
         tunnelStatus = 'connected'; // Show as connected even without tunnel (for browsing)
-        addSystemMessage(`Note: ${reason}`);
       });
       window.runtime.EventsOn('ping:update', (ping) => {
         serverPing = ping;
@@ -78,20 +67,6 @@
     } catch (e) {}
   }
 
-  function addSystemMessage(text) {
-    chatMessages = [...chatMessages, { sender: '🧀', message: text, time: now(), system: true }];
-  }
-
-  function sendChat() {
-    if (!chatInput.trim()) return;
-    const msg = { sender: 'You', message: chatInput, time: now() };
-    chatMessages = [...chatMessages, msg];
-    try {
-      window.go.main.App.SendChat(lobby?.id, chatInput);
-    } catch (e) {}
-    chatInput = '';
-  }
-
   function copyCode() {
     const code = lobby?.code || 'NACHO-0000';
     navigator.clipboard?.writeText(code);
@@ -104,10 +79,6 @@
       await window.go.main.App.LeaveLobby(lobby?.id);
     } catch (e) {}
     dispatch('leave');
-  }
-
-  function now() {
-    return new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
   }
 
   function getPingColor(ping) {
@@ -204,27 +175,14 @@
       </div>
     </div>
 
-    <div class="panel chat-panel">
+    <div class="panel discord-panel">
       <div class="panel-header">
-        <h3>Chat</h3>
+        <h3>Communication</h3>
       </div>
-      <div class="chat-messages">
-        {#each chatMessages as msg}
-          <div class="chat-msg" class:system={msg.system}>
-            <span class="chat-time mono">{msg.time}</span>
-            <span class="chat-sender" class:system-sender={msg.system}>{msg.sender}</span>
-            <span class="chat-text">{msg.message}</span>
-          </div>
-        {/each}
-      </div>
-      <div class="chat-input">
-        <input 
-          type="text" 
-          placeholder="Type a message..." 
-          bind:value={chatInput}
-          on:keydown={(e) => e.key === 'Enter' && sendChat()}
-        />
-        <button class="btn btn-send" on:click={sendChat}>Send</button>
+      <div class="discord-placeholder">
+        <div class="discord-icon">💬</div>
+        <p class="discord-title">Discord Integration Coming Soon</p>
+        <p class="discord-subtitle">Voice chat and text channels will be linked directly to your lobby.</p>
       </div>
     </div>
   </div>
@@ -386,72 +344,39 @@
     color: var(--text-secondary);
   }
 
-  .chat-panel {
+  .discord-panel {
     display: flex;
     flex-direction: column;
   }
 
-  .chat-messages {
+  .discord-placeholder {
     flex: 1;
-    overflow-y: auto;
-    padding: 12px 16px;
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    align-items: center;
+    justify-content: center;
+    padding: 32px 24px;
+    text-align: center;
+    gap: 8px;
   }
 
-  .chat-msg {
-    font-size: 13px;
-    line-height: 1.5;
+  .discord-icon {
+    font-size: 32px;
+    opacity: 0.5;
+    margin-bottom: 8px;
   }
 
-  .chat-msg.system {
-    color: var(--text-muted);
-    font-style: italic;
+  .discord-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-secondary);
+  }
+
+  .discord-subtitle {
     font-size: 12px;
-  }
-
-  .chat-time {
     color: var(--text-muted);
-    font-size: 10px;
-    margin-right: 6px;
-  }
-
-  .chat-sender {
-    font-weight: 600;
-    color: var(--green);
-    margin-right: 4px;
-  }
-
-  .chat-sender.system-sender {
-    color: var(--text-muted);
-  }
-
-  .chat-text {
-    color: var(--text-primary);
-  }
-
-  .chat-input {
-    display: flex;
-    border-top: 1px solid var(--border);
-  }
-
-  .chat-input input {
-    flex: 1;
-    border: none;
-    background: var(--bg-input);
-    padding: 12px 16px;
-  }
-
-  .btn-send {
-    background: var(--green);
-    color: #000;
-    padding: 12px 20px;
-    font-weight: 600;
-  }
-
-  .btn-send:hover {
-    background: #0ea572;
+    max-width: 220px;
+    line-height: 1.4;
   }
 
   .lobby-footer {

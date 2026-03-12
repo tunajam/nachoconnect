@@ -465,10 +465,24 @@ func (a *App) autoTunnel(sl *lobby.ServerLobby) {
 		// Build WebSocket URL for the relay
 		wsURL := fmt.Sprintf("wss://%s/relay?lobby=%s", sl.HubAddr, sl.ID)
 
-		// Start WebSocket bridge (creates local UDP port)
-		bridge, localAddr, err := l2tunnel.StartWSBridge(a.ctx, wsURL)
+		// Error callback for relay connection issues
+		onRelayError := func(err error) {
+			runtime.EventsEmit(a.ctx, "error", fmt.Sprintf("Relay connection issue: %v", err))
+			a.mu.Lock()
+			a.status.Error = "Relay reconnecting..."
+			a.mu.Unlock()
+			runtime.EventsEmit(a.ctx, "tunnel:reconnecting", 0)
+			runtime.EventsEmit(a.ctx, "status:update", a.GetStatus())
+		}
+
+		// Start WebSocket bridge with error callback (creates local UDP port)
+		bridge, localAddr, err := l2tunnel.StartWSBridgeWithCallback(a.ctx, wsURL, onRelayError)
 		if err != nil {
-			runtime.EventsEmit(a.ctx, "error", fmt.Sprintf("Failed to connect to relay: %v", err))
+			a.mu.Lock()
+			a.status.Error = fmt.Sprintf("Failed to connect to relay: %v", err)
+			a.mu.Unlock()
+			runtime.EventsEmit(a.ctx, "error", a.status.Error)
+			runtime.EventsEmit(a.ctx, "status:update", a.GetStatus())
 			return
 		}
 
@@ -481,7 +495,64 @@ func (a *App) autoTunnel(sl *lobby.ServerLobby) {
 			"127.0.0.1", localAddr[len("127.0.0.1:"):])
 		if err != nil {
 			bridge.Stop()
-			runtime.EventsEmit(a.ctx, "error", fmt.Sprintf("Failed to start tunnel: %v", err))
+			a.mu.Lock()
+			a.status.Error = fmt.Sprintf("Failed to start tunnel: %v", err)
+			a.mu.Unlock()
+			runtime.EventsEmit(a.ctx, "error", a.status.Error)
+			runtime.EventsEmit(a.ctx, "status:update", a.GetStatus())
+		}
+
+		// Start health monitoring for interface and bridge
+		a.startHealthLoop(iface)
+	}()
+}
+
+// startHealthLoop monitors interface availability and bridge health
+func (a *App) startHealthLoop(ifaceName string) {
+	if a.healthCancel != nil {
+		a.healthCancel()
+	}
+	ctx, cancel := context.WithCancel(a.ctx)
+	a.healthCancel = cancel
+
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				// Check interface still exists
+				_, err := net.InterfaceByName(ifaceName)
+				if err != nil {
+					a.mu.Lock()
+					a.status.Error = fmt.Sprintf("Interface %s disappeared (adapter unplugged?)", ifaceName)
+					a.status.TunnelActive = false
+					a.status.Connected = false
+					a.mu.Unlock()
+					runtime.EventsEmit(a.ctx, "error", a.status.Error)
+					runtime.EventsEmit(a.ctx, "tunnel:disconnected", nil)
+					runtime.EventsEmit(a.ctx, "status:update", a.GetStatus())
+					return
+				}
+
+				// Check WebSocket bridge health
+				a.mu.RLock()
+				bridge := a.wsBridge
+				a.mu.RUnlock()
+				if bridge != nil && !bridge.IsActive() {
+					a.mu.Lock()
+					a.status.Error = "Relay connection lost"
+					a.status.Connected = false
+					a.mu.Unlock()
+					runtime.EventsEmit(a.ctx, "error", "Relay connection lost")
+					runtime.EventsEmit(a.ctx, "tunnel:disconnected", nil)
+					runtime.EventsEmit(a.ctx, "status:update", a.GetStatus())
+					return
+				}
+			}
 		}
 	}()
 }
@@ -541,20 +612,6 @@ func (a *App) RefreshLobby() *LobbyInfo {
 		return nil
 	}
 	return a.GetLobby(current.ID)
-}
-
-// SendChat sends a chat message to the current lobby
-func (a *App) SendChat(lobbyID, message string) error {
-	gamertag := a.prefs.Gamertag
-	if gamertag == "" {
-		gamertag = "You"
-	}
-	runtime.EventsEmit(a.ctx, "chat:message", map[string]string{
-		"sender":  gamertag,
-		"message": message,
-		"time":    time.Now().Format("15:04"),
-	})
-	return nil
 }
 
 // GetServerPing returns the current measured ping to the server

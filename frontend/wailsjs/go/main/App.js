@@ -58,10 +58,6 @@ export function SelectInterface(arg1) {
   return window['go']['main']['App']['SelectInterface'](arg1);
 }
 
-export function SendChat(arg1, arg2) {
-  return window['go']['main']['App']['SendChat'](arg1, arg2);
-}
-
 export function SetGamertag(arg1) {
   return window['go']['main']['App']['SetGamertag'](arg1);
 }
