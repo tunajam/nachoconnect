@@ -87,6 +87,22 @@ func NewServer() *Server {
 	}
 }
 
+// normalizeCode uppercases and trims an invite code for case-insensitive matching
+func normalizeCode(code string) string {
+	return strings.ToUpper(strings.TrimSpace(code))
+}
+
+// findLobbyByCode finds a lobby by its invite code (case-insensitive)
+func (s *Server) findLobbyByCode(code string) *ServerLobby {
+	norm := normalizeCode(code)
+	for _, l := range s.lobbies {
+		if l.Code == norm {
+			return l
+		}
+	}
+	return nil
+}
+
 func main() {
 	s := NewServer()
 
@@ -100,6 +116,8 @@ func main() {
 	mux.HandleFunc("/api/lobbies/leave", s.handleLeaveLobby)
 	mux.HandleFunc("/api/lobbies/ping", s.handlePingUpdate)
 	mux.HandleFunc("/api/lobbies/", s.handleGetLobby) // /api/lobbies/<id>
+	mux.HandleFunc("/api/code/", s.handleGetByCode)   // /api/code/<code>
+	mux.HandleFunc("/api/join/", s.handleJoinByCode)   // /api/join/<code>?player=X
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "version": "0.1.0"})
 	})
@@ -163,7 +181,7 @@ func (s *Server) handleCreateLobby(w http.ResponseWriter, r *http.Request) {
 	defer s.mu.Unlock()
 
 	id := fmt.Sprintf("lobby-%s", randString(8))
-	code := fmt.Sprintf("NACHO-%04d", rand.Intn(10000))
+	code := s.generateUniqueCode()
 
 	// Assign a hub port for this lobby
 	// In production, all lobbies share the same hub on port 1337 using lobby ID routing
@@ -210,35 +228,33 @@ func (s *Server) handleJoinLobby(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for _, l := range s.lobbies {
-		if l.Code == req.Code {
-			if len(l.Players) >= l.MaxPlayers {
-				http.Error(w, "lobby full", http.StatusConflict)
-				return
-			}
-			// Check if player already in lobby
-			for _, p := range l.Players {
-				if p.Name == req.Player {
-					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(l)
-					return
-				}
-			}
-			l.Players = append(l.Players, ServerPlayer{
-				Name:     req.Player,
-				Addr:     r.RemoteAddr,
-				IsHost:   false,
-				JoinedAt: time.Now(),
-			})
-			log.Printf("player %s joined lobby %s (%s)", req.Player, l.Name, l.ID)
-
+	l := s.findLobbyByCode(req.Code)
+	if l == nil {
+		http.Error(w, "lobby not found", http.StatusNotFound)
+		return
+	}
+	if len(l.Players) >= l.MaxPlayers {
+		http.Error(w, "lobby full", http.StatusConflict)
+		return
+	}
+	// Check if player already in lobby
+	for _, p := range l.Players {
+		if p.Name == req.Player {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(l)
 			return
 		}
 	}
+	l.Players = append(l.Players, ServerPlayer{
+		Name:     req.Player,
+		Addr:     r.RemoteAddr,
+		IsHost:   false,
+		JoinedAt: time.Now(),
+	})
+	log.Printf("player %s joined lobby %s (%s)", req.Player, l.Name, l.ID)
 
-	http.Error(w, "lobby not found", http.StatusNotFound)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(l)
 }
 
 func (s *Server) handleLeaveLobby(w http.ResponseWriter, r *http.Request) {
@@ -394,6 +410,97 @@ func (s *Server) handleRelay(w http.ResponseWriter, r *http.Request) {
 		}
 		s.relayMu.RUnlock()
 	}
+}
+
+// handleGetByCode returns lobby info for a given invite code: GET /api/code/<code>
+func (s *Server) handleGetByCode(w http.ResponseWriter, r *http.Request) {
+	code := strings.TrimPrefix(r.URL.Path, "/api/code/")
+	if code == "" {
+		http.Error(w, "code required", http.StatusBadRequest)
+		return
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	l := s.findLobbyByCode(code)
+	if l == nil {
+		http.Error(w, "lobby not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(l)
+}
+
+// handleJoinByCode joins a lobby by invite code via GET: GET /api/join/<code>?player=<name>
+func (s *Server) handleJoinByCode(w http.ResponseWriter, r *http.Request) {
+	code := strings.TrimPrefix(r.URL.Path, "/api/join/")
+	player := r.URL.Query().Get("player")
+	if code == "" || player == "" {
+		http.Error(w, "code and player query param required", http.StatusBadRequest)
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	l := s.findLobbyByCode(code)
+	if l == nil {
+		http.Error(w, "lobby not found", http.StatusNotFound)
+		return
+	}
+	if len(l.Players) >= l.MaxPlayers {
+		http.Error(w, "lobby full", http.StatusConflict)
+		return
+	}
+	for _, p := range l.Players {
+		if p.Name == player {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(l)
+			return
+		}
+	}
+	l.Players = append(l.Players, ServerPlayer{
+		Name:     player,
+		Addr:     r.RemoteAddr,
+		IsHost:   false,
+		JoinedAt: time.Now(),
+	})
+	log.Printf("player %s joined lobby %s via code %s", player, l.Name, code)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(l)
+}
+
+// generateUniqueCode creates a NACHO-XXXX code with 4 alphanumeric chars, ensuring uniqueness
+func (s *Server) generateUniqueCode() string {
+	const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" // no I/O/0/1 to avoid confusion
+	for attempt := 0; attempt < 100; attempt++ {
+		b := make([]byte, 4)
+		for i := range b {
+			b[i] = chars[rand.Intn(len(chars))]
+		}
+		code := "NACHO-" + string(b)
+		// Check uniqueness
+		found := false
+		for _, l := range s.lobbies {
+			if l.Code == code {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return code
+		}
+	}
+	// Fallback: use longer code
+	b := make([]byte, 6)
+	const chars2 = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+	for i := range b {
+		b[i] = chars2[rand.Intn(len(chars2))]
+	}
+	return "NACHO-" + string(b)
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
