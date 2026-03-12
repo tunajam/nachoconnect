@@ -63,10 +63,25 @@ func init() {
 			return
 		}
 
-		// Same directory as executable
+		// Same directory as executable (Unix)
 		sameDirPath := filepath.Join(dir, "l2tunnel")
 		if _, err := os.Stat(sameDirPath); err == nil {
 			BinaryPath = sameDirPath
+			return
+		}
+
+		// Same directory as executable (Windows)
+		sameDirPathExe := filepath.Join(dir, "l2tunnel.exe")
+		if _, err := os.Stat(sameDirPathExe); err == nil {
+			BinaryPath = sameDirPathExe
+			return
+		}
+
+		// Windows NSIS install: l2tunnel.exe in install dir
+		// Also check parent dir (if running from subdirectory)
+		parentPath := filepath.Join(dir, "..", "l2tunnel.exe")
+		if _, err := os.Stat(parentPath); err == nil {
+			BinaryPath = parentPath
 			return
 		}
 	}
