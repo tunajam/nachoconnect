@@ -8,23 +8,22 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tunajam/nachoconnect/internal/capture"
+	"github.com/tunajam/nachoconnect/internal/l2tunnel"
 	"github.com/tunajam/nachoconnect/internal/lobby"
-	"github.com/tunajam/nachoconnect/internal/tunnel"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // App struct - main application controller
 type App struct {
-	ctx       context.Context
-	cancel    context.CancelFunc
-	capturer  *capture.Capturer
-	tunnel    *tunnel.Manager
-	lobbyMgr  *lobby.Manager
-	mu        sync.RWMutex
-	xboxFound bool
-	xboxMAC   string
-	status    AppStatus
+	ctx            context.Context
+	cancel         context.CancelFunc
+	lobbyMgr       *lobby.Manager
+	mu             sync.RWMutex
+	xboxFound      bool
+	xboxMAC        string
+	status         AppStatus
+	tunnel         *l2tunnel.Tunnel
+	discoverCancel context.CancelFunc
 }
 
 type AppStatus struct {
@@ -60,9 +59,10 @@ type PlayerInfo struct {
 }
 
 type NetworkInterface struct {
-	Name string `json:"name"`
-	IP   string `json:"ip"`
-	MAC  string `json:"mac"`
+	Name        string `json:"name"`
+	IP          string `json:"ip"`
+	MAC         string `json:"mac"`
+	Description string `json:"description,omitempty"`
 }
 
 func NewApp() *App {
@@ -73,10 +73,6 @@ func NewApp() *App {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx, a.cancel = context.WithCancel(ctx)
-	a.tunnel = tunnel.NewManager()
-
-	// Start Xbox detection in background
-	go a.detectXbox()
 
 	// Get local IP
 	go a.detectLocalIP()
@@ -86,11 +82,11 @@ func (a *App) shutdown(ctx context.Context) {
 	if a.cancel != nil {
 		a.cancel()
 	}
-	if a.capturer != nil {
-		a.capturer.Stop()
+	if a.discoverCancel != nil {
+		a.discoverCancel()
 	}
 	if a.tunnel != nil {
-		a.tunnel.Close()
+		a.tunnel.Stop()
 	}
 }
 
@@ -101,13 +97,45 @@ func (a *App) GetStatus() AppStatus {
 	return a.status
 }
 
-// GetInterfaces returns available network interfaces
+// GetInterfaces returns available network interfaces via l2tunnel list
 func (a *App) GetInterfaces() []NetworkInterface {
+	l2Ifaces, err := l2tunnel.List()
+	if err != nil {
+		// Fallback to Go net interfaces
+		return a.getInterfacesFallback()
+	}
+
+	var result []NetworkInterface
+	for _, iface := range l2Ifaces {
+		// Get IP from Go's net package for this interface
+		ip := ""
+		mac := ""
+		if goIface, err := net.InterfaceByName(iface.Name); err == nil {
+			mac = goIface.HardwareAddr.String()
+			if addrs, err := goIface.Addrs(); err == nil {
+				for _, addr := range addrs {
+					if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() != nil {
+						ip = ipnet.IP.String()
+						break
+					}
+				}
+			}
+		}
+		result = append(result, NetworkInterface{
+			Name:        iface.Name,
+			IP:          ip,
+			MAC:         mac,
+			Description: iface.Description,
+		})
+	}
+	return result
+}
+
+func (a *App) getInterfacesFallback() []NetworkInterface {
 	interfaces, err := net.Interfaces()
 	if err != nil {
 		return nil
 	}
-
 	var result []NetworkInterface
 	for _, iface := range interfaces {
 		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
@@ -136,26 +164,104 @@ func (a *App) GetInterfaces() []NetworkInterface {
 	return result
 }
 
-// SelectInterface sets the capture interface
+// SelectInterface sets the capture interface and starts Xbox discovery via l2tunnel
 func (a *App) SelectInterface(name string) error {
+	a.mu.Lock()
+	// Stop previous discovery if any
+	if a.discoverCancel != nil {
+		a.discoverCancel()
+	}
+	a.status.Interface = name
+	a.mu.Unlock()
+
+	// Start l2tunnel discover to find Xbox MACs
+	discoverCtx, cancel := context.WithCancel(a.ctx)
+	a.mu.Lock()
+	a.discoverCancel = cancel
+	a.mu.Unlock()
+
+	discoveries, err := l2tunnel.Discover(discoverCtx, name)
+	if err != nil {
+		return fmt.Errorf("failed to start discovery on %s: %w", name, err)
+	}
+
+	go a.handleDiscoveries(discoveries)
+	return nil
+}
+
+func (a *App) handleDiscoveries(ch <-chan l2tunnel.Discovery) {
+	seen := make(map[string]bool)
+	for d := range ch {
+		if seen[d.SrcMAC] {
+			continue
+		}
+		seen[d.SrcMAC] = true
+
+		a.mu.Lock()
+		if !a.xboxFound {
+			a.xboxFound = true
+			a.xboxMAC = d.SrcMAC
+			a.status.XboxDetected = true
+			a.status.XboxMAC = d.SrcMAC
+			runtime.EventsEmit(a.ctx, "xbox:detected", d.SrcMAC)
+		}
+		a.mu.Unlock()
+		runtime.EventsEmit(a.ctx, "status:update", a.status)
+	}
+}
+
+// StartTunnel starts the l2tunnel tunnel subprocess
+func (a *App) StartTunnel(iface, mac, localAddr, localPort, remoteAddr, remotePort string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if a.capturer != nil {
-		a.capturer.Stop()
+	// Stop existing tunnel
+	if a.tunnel != nil {
+		a.tunnel.Stop()
 	}
 
-	cap, err := capture.NewCapturer(name)
+	cfg := l2tunnel.TunnelConfig{
+		Interface:  iface,
+		FilterMode: "-s",
+		MAC:        mac,
+		LocalAddr:  localAddr,
+		LocalPort:  localPort,
+		RemoteAddr: remoteAddr,
+		RemotePort: remotePort,
+	}
+
+	t, err := l2tunnel.StartTunnel(cfg)
 	if err != nil {
-		return fmt.Errorf("failed to open interface %s: %w", name, err)
+		return fmt.Errorf("failed to start tunnel: %w", err)
 	}
-	a.capturer = cap
-	a.status.Interface = name
 
-	// Start capture loop
-	go a.captureLoop()
+	a.tunnel = t
+	a.status.TunnelActive = true
+	a.status.Connected = true
+
+	runtime.EventsEmit(a.ctx, "status:update", a.status)
+	runtime.EventsEmit(a.ctx, "tunnel:connected", nil)
+
+	// Monitor tunnel health
+	go a.monitorTunnel(t)
 
 	return nil
+}
+
+func (a *App) monitorTunnel(t *l2tunnel.Tunnel) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		if !t.IsActive() {
+			a.mu.Lock()
+			a.status.TunnelActive = false
+			a.status.Connected = false
+			a.mu.Unlock()
+			runtime.EventsEmit(a.ctx, "tunnel:disconnected", nil)
+			runtime.EventsEmit(a.ctx, "status:update", a.status)
+			return
+		}
+	}
 }
 
 // GetLobbies returns available lobbies
@@ -165,7 +271,6 @@ func (a *App) GetLobbies() []LobbyInfo {
 	for _, l := range lobbies {
 		result = append(result, lobbyToInfo(l))
 	}
-	// If empty, return demo lobbies for UI testing
 	if len(result) == 0 {
 		result = a.getDemoLobbies()
 	}
@@ -182,16 +287,24 @@ func (a *App) CreateLobby(name, game string, maxPlayers int) (*LobbyInfo, error)
 	return &info, nil
 }
 
-// JoinLobby joins a lobby by code
+// JoinLobby joins a lobby by code and starts the tunnel to the hub
 func (a *App) JoinLobby(code string) (*LobbyInfo, error) {
 	l, err := a.lobbyMgr.JoinLobby(code, "NachoPlayer")
 	if err != nil {
 		return nil, err
 	}
 
-	// Start tunnel to lobby host
-	if a.tunnel != nil {
-		go a.startTunnel(l)
+	// Start l2tunnel to hub server when we have Xbox MAC and interface
+	a.mu.RLock()
+	iface := a.status.Interface
+	mac := a.xboxMAC
+	a.mu.RUnlock()
+
+	if iface != "" && mac != "" {
+		// TODO: Get hub address from lobby server
+		go func() {
+			a.StartTunnel(iface, mac, "0.0.0.0", "1337", "hub.nachoconnect.net", "1337")
+		}()
 	}
 
 	info := lobbyToInfo(l)
@@ -209,8 +322,8 @@ func (a *App) LeaveLobby(id string) error {
 	a.status.PeerCount = 0
 
 	if a.tunnel != nil {
-		a.tunnel.Close()
-		a.tunnel = tunnel.NewManager()
+		a.tunnel.Stop()
+		a.tunnel = nil
 	}
 
 	runtime.EventsEmit(a.ctx, "status:update", a.status)
@@ -239,89 +352,16 @@ func (a *App) SendChat(lobbyID, message string) error {
 
 // Internal methods
 
-func (a *App) detectXbox() {
-	ticker := time.NewTicker(3 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-a.ctx.Done():
-			return
-		case <-ticker.C:
-			// In a real implementation, we'd sniff for Xbox broadcast packets
-			// For now, simulate detection based on network scan
-			a.mu.Lock()
-			if !a.xboxFound {
-				// Check for Xbox-like devices (OUI 00:50:F2 = Microsoft Xbox)
-				// This is a simplified check - real implementation would use pcap
-				a.status.XboxDetected = false
-			}
-			a.mu.Unlock()
-			runtime.EventsEmit(a.ctx, "status:update", a.status)
-		}
-	}
-}
-
 func (a *App) detectLocalIP() {
 	conn, err := net.Dial("udp", "8.8.8.8:80")
 	if err != nil {
 		return
 	}
 	defer conn.Close()
-
 	localAddr := conn.LocalAddr().(*net.UDPAddr)
 	a.mu.Lock()
 	a.status.LocalIP = localAddr.IP.String()
 	a.mu.Unlock()
-}
-
-func (a *App) captureLoop() {
-	if a.capturer == nil {
-		return
-	}
-
-	packets := a.capturer.Packets()
-	for {
-		select {
-		case <-a.ctx.Done():
-			return
-		case pkt, ok := <-packets:
-			if !ok {
-				return
-			}
-			// Check if this is an Xbox system link packet
-			if capture.IsXboxPacket(pkt) {
-				a.mu.Lock()
-				if !a.xboxFound {
-					a.xboxFound = true
-					a.xboxMAC = capture.ExtractMAC(pkt)
-					a.status.XboxDetected = true
-					a.status.XboxMAC = a.xboxMAC
-					runtime.EventsEmit(a.ctx, "xbox:detected", a.xboxMAC)
-				}
-				a.mu.Unlock()
-
-				// Forward to tunnel if active
-				if a.tunnel != nil && a.tunnel.IsActive() {
-					a.tunnel.Send(pkt)
-				}
-			}
-		}
-	}
-}
-
-func (a *App) startTunnel(l *lobby.Lobby) {
-	a.mu.Lock()
-	a.status.TunnelActive = true
-	a.status.Connected = true
-	a.status.PeerCount = len(l.Members)
-	a.mu.Unlock()
-
-	runtime.EventsEmit(a.ctx, "status:update", a.status)
-	runtime.EventsEmit(a.ctx, "tunnel:connected", nil)
-
-	// In a real implementation, establish Noise Protocol tunnel here
-	// For MVP, we simulate the connection
 }
 
 func lobbyToInfo(l *lobby.Lobby) LobbyInfo {

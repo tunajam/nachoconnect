@@ -2,11 +2,7 @@ module github.com/tunajam/nachoconnect
 
 go 1.25.6
 
-require (
-	github.com/flynn/noise v1.1.0
-	github.com/google/gopacket v1.1.19
-	github.com/wailsapp/wails/v2 v2.11.0
-)
+require github.com/wailsapp/wails/v2 v2.11.0
 
 require (
 	github.com/bep/debounce v1.2.1 // indirect

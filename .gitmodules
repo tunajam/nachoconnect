@@ -1,0 +1,3 @@
+[submodule "lib/l2tunnel"]
+	path = lib/l2tunnel
+	url = https://github.com/mborgerson/l2tunnel.git

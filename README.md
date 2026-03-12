@@ -6,14 +6,13 @@ A modern desktop tunneling app for original Xbox system link play over the inter
 
 ## What It Does
 
-NachoConnect captures Xbox system link broadcast packets on your local network, encrypts them with the Noise Protocol, and tunnels them to your friends over the internet. Their Xboxes see your game as if everyone's in the same room.
+NachoConnect wraps [l2tunnel](https://github.com/mborgerson/l2tunnel) — a battle-tested C utility for Layer 2 traffic tunneling — with a slick desktop UI. It captures Xbox system link broadcast packets on your local network and tunnels them via UDP to a relay hub. Their Xboxes see your game as if everyone's in the same room.
 
 ## Features
 
 - **🎮 Lobby System** — Create/join rooms with invite codes
-- **🔍 Auto-Detect Xbox** — Automatically finds your Xbox on the network
-- **🔒 Encrypted Tunnels** — Noise Protocol (same crypto as WireGuard)
-- **🌐 NAT Traversal** — STUN hole punching + relay fallback
+- **🔍 Auto-Detect Xbox** — Automatically finds your Xbox on the network via l2tunnel discover
+- **🌐 UDP Relay** — Hub server forwards packets between all peers
 - **📊 Latency Display** — See ping to every player
 - **💬 In-Lobby Chat** — Coordinate with your team
 - **🎨 Modern UI** — Dark theme, gaming aesthetic
@@ -30,26 +29,29 @@ All Xbox system link games work, including:
 
 ## Tech Stack
 
-- **Go** — Backend, networking, packet capture
+- **Go** — Backend, app bindings, hub relay server
 - **Wails v2** — Desktop app framework (Go + Svelte)
-- **gopacket** — Raw packet capture/injection via libpcap
-- **flynn/noise** — Noise Protocol Framework encryption
+- **[l2tunnel](https://github.com/mborgerson/l2tunnel)** — C utility for L2 packet capture & tunneling (libpcap)
 - **Svelte** — Frontend UI
 
 ## Architecture
 
 ```
-Xbox ←→ [Packet Capture (gopacket)] ←→ [Noise Tunnel (UDP)] ←→ [Peer's Capture] ←→ Xbox
-                                              ↕
-                                      [Lobby Server (Go)]
-                                      [STUN/Relay Server]
+Xbox ←→ [l2tunnel (libpcap)] ←→ [UDP] ←→ [Hub Relay (Go)] ←→ [UDP] ←→ [l2tunnel] ←→ Xbox
+                                                ↕
+                                        [Lobby Server (Go)]
 ```
+
+The Go app wraps l2tunnel as a subprocess:
+- `l2tunnel list` — enumerate network interfaces
+- `l2tunnel discover <iface>` — find Xbox MAC addresses on the wire
+- `l2tunnel tunnel <iface> -s <mac> <local> <port> <remote> <port>` — tunnel L2 traffic
 
 ## Installation
 
 ### Windows
 1. Download `NachoConnect-Setup-0.1.0.exe` from [Releases](https://github.com/tunajam/nachoconnect/releases)
-2. Run the installer — it bundles everything including the Npcap driver
+2. Run the installer — it bundles l2tunnel and the Npcap driver
 3. Launch NachoConnect from Start Menu or Desktop
 4. Plug in your Xbox and play!
 
@@ -68,46 +70,50 @@ Xbox ←→ [Packet Capture (gopacket)] ←→ [Noise Tunnel (UDP)] ←→ [Peer
 - Go 1.21+
 - Node.js 18+
 - Wails CLI: `go install github.com/wailsapp/wails/v2/cmd/wails@latest`
-- libpcap (macOS: built-in, Linux: `apt install libpcap-dev`, Windows: Npcap)
+- C compiler (Xcode CLI tools on macOS, mingw on Windows)
+- libpcap (macOS: built-in, Linux: `apt install libpcap-dev`, Windows: Npcap SDK)
+
+### Build l2tunnel
+```bash
+# Initialize submodule
+git submodule update --init
+
+# Build l2tunnel binary
+bash scripts/build-l2tunnel.sh
+```
 
 ### Dev Mode
 ```bash
 wails dev
 ```
 
-### Build Windows Installer
-```powershell
-# On Windows — requires NSIS (choco install nsis)
-# Place npcap installer at build/bin/npcap-installer.exe (from https://npcap.com)
-.\scripts\build-installer.ps1
-# Output: dist/NachoConnect-Setup-0.1.0.exe
-```
-
-### Build macOS DMG
+### Build Release
 ```bash
-# On macOS — optional: brew install create-dmg
-bash scripts/build-macos.sh
-# Output: dist/NachoConnect-0.1.0.dmg
+wails build
 ```
 
-### Server
+### Hub Server
+```bash
+# Run the UDP relay hub (Go rewrite of l2tunnel's hub.py)
+go run ./cmd/hub --port 1337
+
+# With peer timeout (seconds)
+go run ./cmd/hub --port 1337 --timeout 60
+```
+
+### Lobby Server
 ```bash
 go run ./cmd/server
 ```
 
-## Protocol
+## How It Works
 
-NachoConnect uses a custom framing protocol over UDP:
+Xbox system link operates at Layer 2 (MAC-based addressing, all consoles use IP 0.0.0.1). l2tunnel captures raw Ethernet frames from the Xbox's network interface and forwards them over UDP to a central hub. The hub relays packets to all other connected peers, who inject them back onto their local networks. To each Xbox, it looks like all consoles are on the same LAN.
 
-```
-[XBC Header (8B)] [Noise-encrypted Ethernet frame]
-  Magic: 0x5842 ("XB")
-  Type:  DATA | BROADCAST | KEEPALIVE | CONTROL
-  Flags: reserved
-  LobbyID: 4 bytes
-```
+## Credits
 
-Xbox system link operates at Layer 2 (MAC-based addressing, all consoles use IP 0.0.0.1). We capture and tunnel raw Ethernet frames — the Xbox handles all game-layer encryption internally.
+- **[l2tunnel](https://github.com/mborgerson/l2tunnel)** by Matt Borgerson — the networking engine that makes this possible
+- **[Wails](https://wails.io)** — Go + web frontend desktop apps
 
 ## License
 
