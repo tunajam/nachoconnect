@@ -1,0 +1,9 @@
+build/bin
+node_modules
+frontend/dist
+*.exe
+*.dmg
+*.app
+.DS_Store
+.env
+.env.*
