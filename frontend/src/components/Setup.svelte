@@ -68,10 +68,8 @@
     try {
       interfaces = await window.go.main.App.GetInterfaces();
     } catch (e) {
-      interfaces = [
-        { name: 'en0', ip: '192.168.1.42', mac: 'aa:bb:cc:dd:ee:ff', description: 'Wi-Fi' },
-        { name: 'en1', ip: '192.168.1.43', mac: '11:22:33:44:55:66', description: 'Ethernet' },
-      ];
+      error = 'Failed to load network interfaces. Is the app running correctly?';
+      interfaces = [];
     }
 
     if (window.runtime) {
@@ -158,7 +156,7 @@
       <div class="perm-actions">
         <button class="btn-primary" on:click={requestPermissions}>Grant Access</button>
         <button class="btn-ghost" on:click={() => { step = 'interface'; loadInterfaces(); }}>
-          Skip — I'll fix this later
+          Skip (Xbox detection won't work)
         </button>
       </div>
     </div>
@@ -166,6 +164,7 @@
   {:else if step === 'interface'}
     <div class="interfaces">
       <h2>Network Interfaces</h2>
+      <p class="hint" style="margin-bottom: 12px;">Pick the interface your Xbox is connected to — usually Ethernet or Wi-Fi.</p>
       <div class="interface-list">
         {#each interfaces as iface}
           <button
@@ -213,7 +212,7 @@
         <p>No Xbox detected on <strong>{selectedInterface.name}</strong>. Make sure your Xbox is powered on and connected to this network.</p>
         <div class="no-xbox-actions">
           <button class="btn-secondary" on:click={() => selectInterface(selectedInterface)}>Retry Scan</button>
-          <button class="btn-ghost" on:click={skipScan}>Skip — I'll connect later</button>
+          <button class="btn-ghost" on:click={skipScan}>Skip (you won't be able to play yet)</button>
         </div>
       </div>
     {/if}

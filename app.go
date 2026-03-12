@@ -216,7 +216,15 @@ func (a *App) GetInterfaces() []NetworkInterface {
 		ip := ""
 		mac := ""
 		if goIface, err := net.InterfaceByName(iface.Name); err == nil {
+			// Skip loopback and down interfaces
+			if goIface.Flags&net.FlagLoopback != 0 || goIface.Flags&net.FlagUp == 0 {
+				continue
+			}
 			mac = goIface.HardwareAddr.String()
+			// Skip interfaces with no MAC (virtual/loopback)
+			if mac == "" {
+				continue
+			}
 			if addrs, err := goIface.Addrs(); err == nil {
 				for _, addr := range addrs {
 					if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() != nil {
@@ -225,6 +233,9 @@ func (a *App) GetInterfaces() []NetworkInterface {
 					}
 				}
 			}
+		} else {
+			// Can't resolve interface details — skip
+			continue
 		}
 		result = append(result, NetworkInterface{
 			Name:        iface.Name,
@@ -232,6 +243,15 @@ func (a *App) GetInterfaces() []NetworkInterface {
 			MAC:         mac,
 			Description: iface.Description,
 		})
+	}
+	// Sort: interfaces with an IP first, then by name (Ethernet-like names first)
+	for i := 0; i < len(result); i++ {
+		for j := i + 1; j < len(result); j++ {
+			// Prioritize interfaces with IPs
+			if result[j].IP != "" && result[i].IP == "" {
+				result[i], result[j] = result[j], result[i]
+			}
+		}
 	}
 	return result
 }
