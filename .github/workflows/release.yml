@@ -129,11 +129,15 @@ jobs:
           fi
           cp scripts/npcap-check.ps1 build/bin/npcap-check.ps1
 
-      - name: Upload Windows artifact
+      - name: List Windows build output
+        shell: bash
+        run: ls -la build/bin/
+
+      - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
           name: windows-installer
-          path: build/bin/*.exe
+          path: build/bin/nachoconnect-*-installer.exe
 
   release:
     needs: [build-macos, build-windows]
@@ -148,6 +152,6 @@ jobs:
         with:
           files: |
             macos-dmg/NachoConnect-macOS-arm64.dmg
-            windows-installer/*.exe
+            windows-installer/nachoconnect-*-installer.exe
           draft: false
           generate_release_notes: true

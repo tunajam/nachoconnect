@@ -8,7 +8,7 @@ Unicode true
 !define INFO_PRODUCTNAME    "NachoConnect"
 !define INFO_COMPANYNAME    "TunaJam"
 !define INFO_PROJECTNAME    "nachoconnect"
-!define INFO_PRODUCTVERSION "0.1.0"
+!define INFO_PRODUCTVERSION "0.3.1"
 !define INFO_COPYRIGHT      "Copyright 2025 TunaJam"
 
 !include "wails_tools.nsh"
