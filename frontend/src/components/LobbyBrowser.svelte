@@ -165,6 +165,12 @@
               <span class="game-name">{lobby.game}</span>
               <span class="separator">•</span>
               <span class="host">Hosted by {lobby.host}</span>
+              <span class="separator">•</span>
+              {#if lobby.mode === 'direct'}
+                <span class="mode-badge mode-direct">⚡ Direct</span>
+              {:else}
+                <span class="mode-badge mode-relay">☁️ Relay</span>
+              {/if}
             </div>
           </div>
           <div class="lobby-stats">
@@ -338,6 +344,23 @@
 
   .separator {
     color: var(--text-muted);
+  }
+
+  .mode-badge {
+    font-size: 10px;
+    padding: 1px 6px;
+    border: 1px solid;
+    font-weight: 600;
+  }
+
+  .mode-direct {
+    color: var(--green);
+    border-color: var(--green-dim, rgba(16, 185, 129, 0.3));
+  }
+
+  .mode-relay {
+    color: var(--text-muted);
+    border-color: var(--border);
   }
 
   .lobby-stats {

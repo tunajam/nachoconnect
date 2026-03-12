@@ -10,6 +10,14 @@ export function CreateLobby(arg1, arg2, arg3) {
   return window['go']['main']['App']['CreateLobby'](arg1, arg2, arg3);
 }
 
+export function CreateLobbyWithMode(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['CreateLobbyWithMode'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function DetectPublicIP() {
+  return window['go']['main']['App']['DetectPublicIP']();
+}
+
 export function GetGamertag() {
   return window['go']['main']['App']['GetGamertag']();
 }
@@ -64,4 +72,8 @@ export function SetGamertag(arg1) {
 
 export function StartTunnel(arg1, arg2, arg3, arg4, arg5, arg6) {
   return window['go']['main']['App']['StartTunnel'](arg1, arg2, arg3, arg4, arg5, arg6);
+}
+
+export function TryUPnP(arg1) {
+  return window['go']['main']['App']['TryUPnP'](arg1);
 }

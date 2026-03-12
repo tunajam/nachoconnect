@@ -6,6 +6,10 @@
   let game = 'Halo 2';
   let maxPlayers = 8;
   let creating = false;
+  let mode = 'direct'; // 'direct' or 'relay'
+  let directPort = 9999;
+  let publicIP = '';
+  let detectingIP = false;
 
   const games = [
     'Halo: Combat Evolved',
@@ -28,18 +32,33 @@
     'Other',
   ];
 
+  async function detectIP() {
+    detectingIP = true;
+    try {
+      publicIP = await window.go.main.App.DetectPublicIP();
+    } catch (e) {
+      publicIP = '(could not detect)';
+    }
+    detectingIP = false;
+  }
+
+  // Auto-detect IP when switching to direct mode
+  $: if (mode === 'direct' && !publicIP) {
+    detectIP();
+  }
+
   async function createLobby() {
     if (!name.trim()) return;
     creating = true;
 
     try {
-      const lobby = await window.go.main.App.CreateLobby(name, game, maxPlayers);
+      const lobby = await window.go.main.App.CreateLobbyWithMode(name, game, maxPlayers, mode, directPort);
       if (lobby) {
         dispatch('created', lobby);
         return;
       }
     } catch (e) {
-      console.log('Create lobby fallback (dev mode)');
+      console.log('Create lobby fallback (dev mode)', e);
     }
 
     creating = false;
@@ -70,6 +89,51 @@
             <option value={g}>{g}</option>
           {/each}
         </select>
+      </div>
+
+      <div class="field">
+        <label>Connection Mode</label>
+        <div class="mode-selector">
+          <button 
+            class="mode-opt" 
+            class:active={mode === 'direct'}
+            on:click={() => mode = 'direct'}
+          >
+            <span class="mode-icon">⚡</span>
+            <span class="mode-label">Direct (Best Latency)</span>
+          </button>
+          <button 
+            class="mode-opt" 
+            class:active={mode === 'relay'}
+            on:click={() => mode = 'relay'}
+          >
+            <span class="mode-icon">☁️</span>
+            <span class="mode-label">Relay (No Port Forward)</span>
+          </button>
+        </div>
+        {#if mode === 'direct'}
+          <div class="direct-info">
+            <div class="direct-row">
+              <span class="direct-label">Your Public IP</span>
+              <span class="direct-value mono">
+                {#if detectingIP}detecting...{:else}{publicIP || '--'}{/if}
+              </span>
+            </div>
+            <div class="direct-row">
+              <span class="direct-label">UDP Port</span>
+              <input 
+                type="number" 
+                class="port-input" 
+                bind:value={directPort} 
+                min="1024" 
+                max="65535"
+              />
+            </div>
+            <p class="direct-hint">
+              ℹ️ Forward UDP port {directPort} on your router to this machine, or let UPnP handle it automatically.
+            </p>
+          </div>
+        {/if}
       </div>
 
       <div class="field">
@@ -149,6 +213,83 @@
 
   .field input, .field select {
     width: 100%;
+  }
+
+  .mode-selector {
+    display: flex;
+    gap: 0;
+  }
+
+  .mode-opt {
+    flex: 1;
+    padding: 10px 12px;
+    background: var(--bg-input);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    font-weight: 500;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    justify-content: center;
+    transition: all 0.15s;
+  }
+
+  .mode-opt:not(:first-child) {
+    border-left: none;
+  }
+
+  .mode-opt.active {
+    background: var(--green);
+    color: #000;
+    border-color: var(--green);
+    font-weight: 700;
+  }
+
+  .mode-opt:hover:not(.active) {
+    background: var(--bg-card-hover);
+  }
+
+  .mode-icon {
+    font-size: 14px;
+  }
+
+  .direct-info {
+    margin-top: 10px;
+    padding: 12px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .direct-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 12px;
+  }
+
+  .direct-label {
+    color: var(--text-muted);
+  }
+
+  .direct-value {
+    color: var(--text-primary);
+  }
+
+  .port-input {
+    width: 80px;
+    padding: 4px 8px;
+    font-size: 12px;
+    text-align: right;
+  }
+
+  .direct-hint {
+    font-size: 11px;
+    color: var(--text-muted);
+    line-height: 1.4;
   }
 
   .player-selector {

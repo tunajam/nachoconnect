@@ -26,6 +26,8 @@ type App struct {
 	status         AppStatus
 	tunnel         *l2tunnel.Tunnel
 	wsBridge       *l2tunnel.WSBridge
+	hub            *l2tunnel.Hub
+	upnpPort       int // port we UPnP-forwarded (0 = none)
 	discoverCancel context.CancelFunc
 	currentLobby   *lobby.ServerLobby
 	pingTicker     *time.Ticker
@@ -48,18 +50,21 @@ type AppStatus struct {
 }
 
 type LobbyInfo struct {
-	ID         string       `json:"id"`
-	Name       string       `json:"name"`
-	Game       string       `json:"game"`
-	Host       string       `json:"host"`
-	Players    int          `json:"players"`
-	MaxPlayers int          `json:"maxPlayers"`
-	Ping       int          `json:"ping"`
-	Region     string       `json:"region"`
-	Code       string       `json:"code"`
-	HubAddr    string       `json:"hubAddr"`
-	HubPort    int          `json:"hubPort"`
-	Members    []PlayerInfo `json:"members"`
+	ID           string       `json:"id"`
+	Name         string       `json:"name"`
+	Game         string       `json:"game"`
+	Host         string       `json:"host"`
+	Players      int          `json:"players"`
+	MaxPlayers   int          `json:"maxPlayers"`
+	Ping         int          `json:"ping"`
+	Region       string       `json:"region"`
+	Code         string       `json:"code"`
+	Mode         string       `json:"mode"`         // "relay" or "direct"
+	HubAddr      string       `json:"hubAddr"`
+	HubPort      int          `json:"hubPort"`
+	HostPublicIP string       `json:"hostPublicIP"` // Direct mode
+	HostPort     int          `json:"hostPort"`     // Direct mode
+	Members      []PlayerInfo `json:"members"`
 }
 
 type PlayerInfo struct {
@@ -132,6 +137,12 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 	if a.wsBridge != nil {
 		a.wsBridge.Stop()
+	}
+	if a.hub != nil {
+		a.hub.Stop()
+	}
+	if a.upnpPort > 0 {
+		l2tunnel.RemoveUPnPForward(a.upnpPort)
 	}
 }
 
@@ -387,15 +398,74 @@ func (a *App) GetLobbies() []LobbyInfo {
 	return result
 }
 
-// CreateLobby creates a new lobby on the remote server
+// CreateLobby creates a new relay-mode lobby (backwards compatible)
 func (a *App) CreateLobby(name, game string, maxPlayers int) (*LobbyInfo, error) {
+	return a.CreateLobbyWithMode(name, game, maxPlayers, "relay", 9999)
+}
+
+// CreateLobbyWithMode creates a lobby with specified connection mode.
+// mode: "direct" or "relay". port is the UDP port for direct mode.
+func (a *App) CreateLobbyWithMode(name, game string, maxPlayers int, mode string, port int) (*LobbyInfo, error) {
 	gamertag := a.prefs.Gamertag
 	if gamertag == "" {
 		gamertag = "NachoPlayer"
 	}
 
-	sl, err := a.lobbyClient.CreateLobby(name, game, gamertag, maxPlayers)
+	if mode == "" {
+		mode = "relay"
+	}
+
+	var hostPublicIP string
+	var hostPort int
+
+	if mode == "direct" {
+		// Start the local hub
+		hub, err := l2tunnel.StartHub(port)
+		if err != nil {
+			return nil, fmt.Errorf("failed to start hub on port %d: %w", port, err)
+		}
+		a.mu.Lock()
+		if a.hub != nil {
+			a.hub.Stop()
+		}
+		a.hub = hub
+		a.mu.Unlock()
+		hostPort = hub.Port()
+
+		// Try UPnP auto-forward
+		upnpResult := l2tunnel.TryUPnPForward(hostPort)
+		if upnpResult.Success {
+			a.mu.Lock()
+			a.upnpPort = hostPort
+			a.mu.Unlock()
+		}
+
+		// Detect public IP
+		ip, err := l2tunnel.DetectPublicIP()
+		if err != nil {
+			// Non-fatal — user can still share their IP manually
+			ip = ""
+		}
+		hostPublicIP = ip
+
+		// Update status
+		a.mu.Lock()
+		a.status.PublicIP = hostPublicIP
+		a.mu.Unlock()
+		runtime.EventsEmit(a.ctx, "status:update", a.GetStatus())
+	}
+
+	sl, err := a.lobbyClient.CreateLobbyWithMode(name, game, gamertag, maxPlayers, mode, hostPublicIP, hostPort)
 	if err != nil {
+		// Clean up hub if we started one
+		if mode == "direct" {
+			a.mu.Lock()
+			if a.hub != nil {
+				a.hub.Stop()
+				a.hub = nil
+			}
+			a.mu.Unlock()
+		}
 		return nil, err
 	}
 
@@ -403,17 +473,45 @@ func (a *App) CreateLobby(name, game string, maxPlayers int) (*LobbyInfo, error)
 	a.currentLobby = sl
 	a.mu.Unlock()
 
-	// Start auto-tunnel if we have Xbox MAC and interface
-	a.autoTunnel(sl)
+	if mode == "direct" {
+		// For direct mode host: start l2tunnel pointed at local hub
+		a.autoTunnelDirect(sl)
+	} else {
+		// Relay mode: existing WebSocket bridge flow
+		a.autoTunnel(sl)
+	}
 
-	// Start ping measurement loop
 	a.startPingLoop(sl)
 
 	info := serverLobbyToInfo(*sl, gamertag)
 	return &info, nil
 }
 
-// JoinLobby joins a lobby by code and starts the tunnel to the hub
+// DetectPublicIP returns the host's public IP address
+func (a *App) DetectPublicIP() string {
+	ip, err := l2tunnel.DetectPublicIP()
+	if err != nil {
+		return ""
+	}
+	a.mu.Lock()
+	a.status.PublicIP = ip
+	a.mu.Unlock()
+	runtime.EventsEmit(a.ctx, "status:update", a.GetStatus())
+	return ip
+}
+
+// TryUPnP attempts UPnP port forwarding and returns the result
+func (a *App) TryUPnP(port int) map[string]interface{} {
+	result := l2tunnel.TryUPnPForward(port)
+	return map[string]interface{}{
+		"success": result.Success,
+		"message": result.Message,
+		"port":    result.Port,
+	}
+}
+
+// JoinLobby joins a lobby by code and starts the tunnel.
+// Automatically uses direct or relay mode based on lobby settings.
 func (a *App) JoinLobby(code string) (*LobbyInfo, error) {
 	gamertag := a.prefs.Gamertag
 	if gamertag == "" {
@@ -429,10 +527,13 @@ func (a *App) JoinLobby(code string) (*LobbyInfo, error) {
 	a.currentLobby = sl
 	a.mu.Unlock()
 
-	// Auto-tunnel to hub
-	a.autoTunnel(sl)
+	// Route based on lobby mode
+	if sl.Mode == "direct" && sl.HostPublicIP != "" && sl.HostPort > 0 {
+		a.autoTunnelDirectPeer(sl)
+	} else {
+		a.autoTunnel(sl)
+	}
 
-	// Start ping measurement loop
 	a.startPingLoop(sl)
 
 	info := serverLobbyToInfo(*sl, gamertag)
@@ -503,6 +604,66 @@ func (a *App) autoTunnel(sl *lobby.ServerLobby) {
 		}
 
 		// Start health monitoring for interface and bridge
+		a.startHealthLoop(iface)
+	}()
+}
+
+// autoTunnelDirect starts l2tunnel for the host in direct mode.
+// The host connects l2tunnel to the local hub.
+func (a *App) autoTunnelDirect(sl *lobby.ServerLobby) {
+	a.mu.RLock()
+	iface := a.status.Interface
+	mac := a.xboxMAC
+	hub := a.hub
+	a.mu.RUnlock()
+
+	if iface == "" || mac == "" {
+		runtime.EventsEmit(a.ctx, "tunnel:skipped", "No Xbox detected or interface not selected")
+		return
+	}
+	if hub == nil {
+		runtime.EventsEmit(a.ctx, "tunnel:skipped", "Hub not running")
+		return
+	}
+
+	go func() {
+		err := a.StartTunnel(iface, mac, "0.0.0.0", "0",
+			"127.0.0.1", fmt.Sprintf("%d", hub.Port()))
+		if err != nil {
+			a.mu.Lock()
+			a.status.Error = fmt.Sprintf("Failed to start tunnel: %v", err)
+			a.mu.Unlock()
+			runtime.EventsEmit(a.ctx, "error", a.status.Error)
+			runtime.EventsEmit(a.ctx, "status:update", a.GetStatus())
+		}
+		a.startHealthLoop(iface)
+	}()
+}
+
+// autoTunnelDirectPeer starts l2tunnel for a peer in direct mode.
+// Connects directly to the host's public IP:port — no relay.
+func (a *App) autoTunnelDirectPeer(sl *lobby.ServerLobby) {
+	a.mu.RLock()
+	iface := a.status.Interface
+	mac := a.xboxMAC
+	a.mu.RUnlock()
+
+	if iface == "" || mac == "" {
+		runtime.EventsEmit(a.ctx, "tunnel:skipped", "No Xbox detected or interface not selected")
+		return
+	}
+
+	go func() {
+		err := a.StartTunnel(iface, mac, "0.0.0.0", "0",
+			sl.HostPublicIP, fmt.Sprintf("%d", sl.HostPort))
+		if err != nil {
+			a.mu.Lock()
+			a.status.Error = fmt.Sprintf("Failed to connect to host: %v", err)
+			a.mu.Unlock()
+			runtime.EventsEmit(a.ctx, "error", a.status.Error)
+			runtime.EventsEmit(a.ctx, "status:update", a.GetStatus())
+			return
+		}
 		a.startHealthLoop(iface)
 	}()
 }
@@ -586,6 +747,14 @@ func (a *App) LeaveLobby(id string) error {
 	if a.wsBridge != nil {
 		a.wsBridge.Stop()
 		a.wsBridge = nil
+	}
+	if a.hub != nil {
+		a.hub.Stop()
+		a.hub = nil
+	}
+	if a.upnpPort > 0 {
+		l2tunnel.RemoveUPnPForward(a.upnpPort)
+		a.upnpPort = 0
 	}
 	a.mu.Unlock()
 
@@ -719,18 +888,25 @@ func serverLobbyToInfo(sl lobby.ServerLobby, myGamertag string) LobbyInfo {
 			Connected: true,
 		})
 	}
+	mode := sl.Mode
+	if mode == "" {
+		mode = "relay"
+	}
 	return LobbyInfo{
-		ID:         sl.ID,
-		Name:       sl.Name,
-		Game:       sl.Game,
-		Host:       sl.Host,
-		Players:    len(sl.Players),
-		MaxPlayers: sl.MaxPlayers,
-		Ping:       0, // Will be set by client-side ping measurement
-		Region:     sl.Region,
-		Code:       sl.Code,
-		HubAddr:    sl.HubAddr,
-		HubPort:    sl.HubPort,
-		Members:    members,
+		ID:           sl.ID,
+		Name:         sl.Name,
+		Game:         sl.Game,
+		Host:         sl.Host,
+		Players:      len(sl.Players),
+		MaxPlayers:   sl.MaxPlayers,
+		Ping:         0,
+		Region:       sl.Region,
+		Code:         sl.Code,
+		Mode:         mode,
+		HubAddr:      sl.HubAddr,
+		HubPort:      sl.HubPort,
+		HostPublicIP: sl.HostPublicIP,
+		HostPort:     sl.HostPort,
+		Members:      members,
 	}
 }

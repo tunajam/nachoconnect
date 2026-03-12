@@ -20,18 +20,21 @@ type Client struct {
 
 // ServerLobby mirrors the server's lobby representation
 type ServerLobby struct {
-	ID         string         `json:"id"`
-	Name       string         `json:"name"`
-	Game       string         `json:"game"`
-	Host       string         `json:"host"`
-	HostAddr   string         `json:"hostAddr,omitempty"`
-	MaxPlayers int            `json:"maxPlayers"`
-	Code       string         `json:"code"`
-	Region     string         `json:"region"`
-	HubAddr    string         `json:"hubAddr,omitempty"`
-	HubPort    int            `json:"hubPort,omitempty"`
-	Players    []ServerPlayer `json:"players"`
-	CreatedAt  time.Time      `json:"createdAt"`
+	ID           string         `json:"id"`
+	Name         string         `json:"name"`
+	Game         string         `json:"game"`
+	Host         string         `json:"host"`
+	HostAddr     string         `json:"hostAddr,omitempty"`
+	MaxPlayers   int            `json:"maxPlayers"`
+	Code         string         `json:"code"`
+	Region       string         `json:"region"`
+	Mode         string         `json:"mode"`                   // "relay" or "direct"
+	HubAddr      string         `json:"hubAddr,omitempty"`
+	HubPort      int            `json:"hubPort,omitempty"`
+	HostPublicIP string         `json:"hostPublicIP,omitempty"` // Direct mode: host's public IP
+	HostPort     int            `json:"hostPort,omitempty"`     // Direct mode: host's UDP port
+	Players      []ServerPlayer `json:"players"`
+	CreatedAt    time.Time      `json:"createdAt"`
 }
 
 // ServerPlayer mirrors the server's player representation
@@ -44,10 +47,13 @@ type ServerPlayer struct {
 }
 
 type createLobbyReq struct {
-	Name       string `json:"name"`
-	Game       string `json:"game"`
-	Host       string `json:"host"`
-	MaxPlayers int    `json:"maxPlayers"`
+	Name         string `json:"name"`
+	Game         string `json:"game"`
+	Host         string `json:"host"`
+	MaxPlayers   int    `json:"maxPlayers"`
+	Mode         string `json:"mode,omitempty"`         // "relay" or "direct"
+	HostPublicIP string `json:"hostPublicIP,omitempty"` // Direct mode
+	HostPort     int    `json:"hostPort,omitempty"`     // Direct mode
 }
 
 type joinLobbyReq struct {
@@ -100,11 +106,22 @@ func (c *Client) ListLobbies() ([]ServerLobby, error) {
 
 // CreateLobby creates a new lobby on the remote server
 func (c *Client) CreateLobby(name, game, host string, maxPlayers int) (*ServerLobby, error) {
+	return c.CreateLobbyWithMode(name, game, host, maxPlayers, "relay", "", 0)
+}
+
+// CreateLobbyWithMode creates a lobby with a specific connection mode
+func (c *Client) CreateLobbyWithMode(name, game, host string, maxPlayers int, mode, hostPublicIP string, hostPort int) (*ServerLobby, error) {
+	if mode == "" {
+		mode = "relay"
+	}
 	body, _ := json.Marshal(createLobbyReq{
-		Name:       name,
-		Game:       game,
-		Host:       host,
-		MaxPlayers: maxPlayers,
+		Name:         name,
+		Game:         game,
+		Host:         host,
+		MaxPlayers:   maxPlayers,
+		Mode:         mode,
+		HostPublicIP: hostPublicIP,
+		HostPort:     hostPort,
 	})
 
 	resp, err := c.httpClient.Post(c.baseURL+"/api/lobbies/create", "application/json", bytes.NewReader(body))

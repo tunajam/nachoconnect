@@ -137,12 +137,22 @@
 
       <div class="connection-info">
         <div class="conn-row">
+          <span class="conn-label">Mode</span>
+          <span class="conn-value">
+            {#if lobby?.mode === 'direct'}
+              ⚡ Direct P2P
+            {:else}
+              ☁️ Azure Relay
+            {/if}
+          </span>
+        </div>
+        <div class="conn-row">
           <span class="conn-label">Connection</span>
           <span class="conn-value">
             {#if tunnelStatus === 'connecting'}
               🟡 Connecting...
             {:else if tunnelStatus === 'connected'}
-              🟢 Hub Relay
+              🟢 Connected
             {:else if tunnelStatus === 'reconnecting'}
               🟡 Reconnecting...
             {:else}

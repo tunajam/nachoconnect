@@ -23,18 +23,21 @@ type Server struct {
 }
 
 type ServerLobby struct {
-	ID         string         `json:"id"`
-	Name       string         `json:"name"`
-	Game       string         `json:"game"`
-	Host       string         `json:"host"`
-	HostAddr   string         `json:"hostAddr,omitempty"`
-	MaxPlayers int            `json:"maxPlayers"`
-	Code       string         `json:"code"`
-	Region     string         `json:"region"`
-	HubAddr    string         `json:"hubAddr"`
-	HubPort    int            `json:"hubPort"`
-	Players    []ServerPlayer `json:"players"`
-	CreatedAt  time.Time      `json:"createdAt"`
+	ID           string         `json:"id"`
+	Name         string         `json:"name"`
+	Game         string         `json:"game"`
+	Host         string         `json:"host"`
+	HostAddr     string         `json:"hostAddr,omitempty"`
+	MaxPlayers   int            `json:"maxPlayers"`
+	Code         string         `json:"code"`
+	Region       string         `json:"region"`
+	Mode         string         `json:"mode"`                   // "relay" or "direct"
+	HubAddr      string         `json:"hubAddr"`
+	HubPort      int            `json:"hubPort"`
+	HostPublicIP string         `json:"hostPublicIP,omitempty"` // Direct mode
+	HostPort     int            `json:"hostPort,omitempty"`     // Direct mode
+	Players      []ServerPlayer `json:"players"`
+	CreatedAt    time.Time      `json:"createdAt"`
 }
 
 type ServerPlayer struct {
@@ -46,10 +49,13 @@ type ServerPlayer struct {
 }
 
 type CreateLobbyReq struct {
-	Name       string `json:"name"`
-	Game       string `json:"game"`
-	Host       string `json:"host"`
-	MaxPlayers int    `json:"maxPlayers"`
+	Name         string `json:"name"`
+	Game         string `json:"game"`
+	Host         string `json:"host"`
+	MaxPlayers   int    `json:"maxPlayers"`
+	Mode         string `json:"mode,omitempty"`
+	HostPublicIP string `json:"hostPublicIP,omitempty"`
+	HostPort     int    `json:"hostPort,omitempty"`
 }
 
 type JoinLobbyReq struct {
@@ -183,23 +189,29 @@ func (s *Server) handleCreateLobby(w http.ResponseWriter, r *http.Request) {
 	id := fmt.Sprintf("lobby-%s", randString(8))
 	code := s.generateUniqueCode()
 
-	// Assign a hub port for this lobby
-	// In production, all lobbies share the same hub on port 1337 using lobby ID routing
-	// For now, assign sequential ports (the hub server will be updated to support multi-lobby)
-	hubPort := 1337 // Use single hub port — hub handles all lobbies
+	// Determine connection mode
+	mode := req.Mode
+	if mode == "" {
+		mode = "relay"
+	}
+
+	hubPort := 1337
 	hubAddr := "nachoconnect-server.gentlepebble-471fc641.westus2.azurecontainerapps.io"
 
 	lobby := &ServerLobby{
-		ID:         id,
-		Name:       req.Name,
-		Game:       req.Game,
-		Host:       req.Host,
-		HostAddr:   r.RemoteAddr,
-		MaxPlayers: req.MaxPlayers,
-		Code:       code,
-		Region:     "Auto",
-		HubAddr:    hubAddr,
-		HubPort:    hubPort,
+		ID:           id,
+		Name:         req.Name,
+		Game:         req.Game,
+		Host:         req.Host,
+		HostAddr:     r.RemoteAddr,
+		MaxPlayers:   req.MaxPlayers,
+		Code:         code,
+		Region:       "Auto",
+		Mode:         mode,
+		HubAddr:      hubAddr,
+		HubPort:      hubPort,
+		HostPublicIP: req.HostPublicIP,
+		HostPort:     req.HostPort,
 		Players: []ServerPlayer{
 			{Name: req.Host, Addr: r.RemoteAddr, IsHost: true, JoinedAt: time.Now()},
 		},

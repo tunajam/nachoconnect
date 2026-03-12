@@ -6,6 +6,10 @@ export function CheckPermissions():Promise<main.PermissionStatus>;
 
 export function CreateLobby(arg1:string,arg2:string,arg3:number):Promise<main.LobbyInfo>;
 
+export function CreateLobbyWithMode(arg1:string,arg2:string,arg3:number,arg4:string,arg5:number):Promise<main.LobbyInfo>;
+
+export function DetectPublicIP():Promise<string>;
+
 export function GetGamertag():Promise<string>;
 
 export function GetInterfaces():Promise<Array<main.NetworkInterface>>;
@@ -33,3 +37,5 @@ export function SelectInterface(arg1:string):Promise<void>;
 export function SetGamertag(arg1:string):Promise<void>;
 
 export function StartTunnel(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:string):Promise<void>;
+
+export function TryUPnP(arg1:number):Promise<Record<string, any>>;

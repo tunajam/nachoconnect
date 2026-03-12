@@ -62,8 +62,11 @@ export namespace main {
 	    ping: number;
 	    region: string;
 	    code: string;
+	    mode: string;
 	    hubAddr: string;
 	    hubPort: number;
+	    hostPublicIP: string;
+	    hostPort: number;
 	    members: PlayerInfo[];
 	
 	    static createFrom(source: any = {}) {
@@ -81,8 +84,11 @@ export namespace main {
 	        this.ping = source["ping"];
 	        this.region = source["region"];
 	        this.code = source["code"];
+	        this.mode = source["mode"];
 	        this.hubAddr = source["hubAddr"];
 	        this.hubPort = source["hubPort"];
+	        this.hostPublicIP = source["hostPublicIP"];
+	        this.hostPort = source["hostPort"];
 	        this.members = this.convertValues(source["members"], PlayerInfo);
 	    }
 	
