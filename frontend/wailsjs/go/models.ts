@@ -98,6 +98,7 @@ export namespace main {
 	    name: string;
 	    ip: string;
 	    mac: string;
+	    description?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new NetworkInterface(source);
@@ -108,6 +109,7 @@ export namespace main {
 	        this.name = source["name"];
 	        this.ip = source["ip"];
 	        this.mac = source["mac"];
+	        this.description = source["description"];
 	    }
 	}
 

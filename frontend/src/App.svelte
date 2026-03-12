@@ -1,12 +1,13 @@
 <script>
   import { onMount } from 'svelte';
   import Header from './components/Header.svelte';
+  import Setup from './components/Setup.svelte';
   import LobbyBrowser from './components/LobbyBrowser.svelte';
   import LobbyView from './components/LobbyView.svelte';
   import CreateLobby from './components/CreateLobby.svelte';
   import StatusBar from './components/StatusBar.svelte';
 
-  let currentView = 'browser'; // browser | lobby | create
+  let currentView = 'setup'; // setup | browser | lobby | create
   let status = {
     xboxDetected: false,
     xboxMAC: '',
@@ -39,6 +40,18 @@
     }
   });
 
+  function setupComplete(event) {
+    const { interface: iface, mac } = event.detail;
+    if (iface) {
+      status.interface = iface.name;
+    }
+    if (mac) {
+      status.xboxDetected = true;
+      status.xboxMAC = mac;
+    }
+    currentView = 'browser';
+  }
+
   function showBrowser() {
     currentView = 'browser';
     currentLobby = null;
@@ -63,7 +76,9 @@
   <Header {status} on:home={showBrowser} />
   
   <main class="main-content">
-    {#if currentView === 'browser'}
+    {#if currentView === 'setup'}
+      <Setup on:ready={setupComplete} />
+    {:else if currentView === 'browser'}
       <LobbyBrowser on:join={joinLobby} on:create={showCreate} />
     {:else if currentView === 'lobby'}
       <LobbyView lobby={currentLobby} on:leave={showBrowser} />
