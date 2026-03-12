@@ -85,6 +85,18 @@ jobs:
       - name: Install Wails
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
 
+      - name: Install NSIS
+        shell: powershell
+        run: |
+          choco install nsis -y
+          echo "C:\Program Files (x86)\NSIS" >> $env:GITHUB_PATH
+
+      - name: Install MinGW
+        shell: powershell
+        run: |
+          choco install mingw -y
+          echo "C:\ProgramData\mingw64\mingw64\bin" >> $env:GITHUB_PATH
+
       - name: Install Npcap SDK
         shell: powershell
         run: |
@@ -108,14 +120,14 @@ jobs:
         shell: bash
         run: |
           cd lib/l2tunnel
-          # Cross-compile for Windows using MinGW
-          x86_64-w64-mingw32-gcc -o l2tunnel.exe \
+          gcc -o l2tunnel.exe \
             -Wall -O3 \
             -DBUILD_DATE='"$(date -u)"' \
             -DBUILD_VERSION='"$(git rev-parse --short HEAD)"' \
             -I ../../npcap-sdk/Include \
             -L ../../npcap-sdk/Lib/x64 \
-            l2tunnel.c -lwpcap -lws2_32 || echo "Windows l2tunnel build skipped (no MinGW)"
+            l2tunnel.c -lwpcap -lws2_32
+          file l2tunnel.exe
           cd ../..
 
       - name: Build Windows (amd64)
@@ -133,11 +145,15 @@ jobs:
         shell: bash
         run: ls -la build/bin/
 
-      - name: Upload Windows installer
+      - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
           name: windows-installer
-          path: build/bin/nachoconnect-*-installer.exe
+          path: |
+            build/bin/*-installer.exe
+            build/bin/NachoConnect.exe
+            build/bin/l2tunnel.exe
+            build/bin/npcap-installer.exe
 
   release:
     needs: [build-macos, build-windows]
@@ -152,6 +168,9 @@ jobs:
         with:
           files: |
             macos-dmg/NachoConnect-macOS-arm64.dmg
-            windows-installer/nachoconnect-*-installer.exe
+            windows-installer/*-installer.exe
+            windows-installer/NachoConnect.exe
+            windows-installer/l2tunnel.exe
+            windows-installer/npcap-installer.exe
           draft: false
           generate_release_notes: true

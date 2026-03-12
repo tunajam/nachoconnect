@@ -8,7 +8,7 @@
   <div class="header-left" on:click={() => dispatch('home')} on:keydown={() => {}}>
     <span class="logo">🧀</span>
     <span class="title">NachoConnect</span>
-    <span class="version">v0.1.0</span>
+    <span class="version">v0.3.2</span>
   </div>
   
   <div class="header-right">
