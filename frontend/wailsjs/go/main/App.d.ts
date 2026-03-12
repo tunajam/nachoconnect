@@ -20,6 +20,8 @@ export function GetStatus():Promise<main.AppStatus>;
 
 export function JoinLobby(arg1:string):Promise<main.LobbyInfo>;
 
+export function JoinLobbyByCode(arg1:string):Promise<main.LobbyInfo>;
+
 export function LeaveLobby(arg1:string):Promise<void>;
 
 export function RefreshLobby():Promise<main.LobbyInfo>;

@@ -38,6 +38,10 @@ export function JoinLobby(arg1) {
   return window['go']['main']['App']['JoinLobby'](arg1);
 }
 
+export function JoinLobbyByCode(arg1) {
+  return window['go']['main']['App']['JoinLobbyByCode'](arg1);
+}
+
 export function LeaveLobby(arg1) {
   return window['go']['main']['App']['LeaveLobby'](arg1);
 }
