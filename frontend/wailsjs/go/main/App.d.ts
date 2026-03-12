@@ -4,9 +4,7 @@ import {main} from '../models';
 
 export function CheckPermissions():Promise<main.PermissionStatus>;
 
-export function CreateLobby(arg1:string,arg2:string,arg3:number):Promise<main.LobbyInfo>;
-
-export function CreateLobbyWithMode(arg1:string,arg2:string,arg3:number,arg4:string,arg5:number):Promise<main.LobbyInfo>;
+export function CreateLobby(arg1:string,arg2:string,arg3:number,arg4:number):Promise<main.LobbyInfo>;
 
 export function DetectPublicIP():Promise<string>;
 
@@ -17,6 +15,8 @@ export function GetInterfaces():Promise<Array<main.NetworkInterface>>;
 export function GetLobbies():Promise<Array<main.LobbyInfo>>;
 
 export function GetLobby(arg1:string):Promise<main.LobbyInfo>;
+
+export function GetPortForwardInfo(arg1:number):Promise<main.PortForwardInfo>;
 
 export function GetServerPing():Promise<number>;
 

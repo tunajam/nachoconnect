@@ -1,4 +1,5 @@
 <script>
+  import { onMount } from 'svelte';
   import { createEventDispatcher } from 'svelte';
   const dispatch = createEventDispatcher();
 
@@ -6,10 +7,12 @@
   let game = 'Halo 2';
   let maxPlayers = 8;
   let creating = false;
-  let mode = 'direct'; // 'direct' or 'relay'
-  let directPort = 9999;
+  let port = 9999;
   let publicIP = '';
-  let detectingIP = false;
+  let localIP = '';
+  let gatewayIP = '';
+  let detectingIP = true;
+  let upnpStatus = 'untried'; // untried | trying | success | failed
 
   const games = [
     'Halo: Combat Evolved',
@@ -32,19 +35,29 @@
     'Other',
   ];
 
-  async function detectIP() {
-    detectingIP = true;
+  onMount(async () => {
     try {
-      publicIP = await window.go.main.App.DetectPublicIP();
+      const info = await window.go.main.App.GetPortForwardInfo(port);
+      publicIP = info.publicIP || '';
+      localIP = info.localIP || '';
+      gatewayIP = info.gatewayIP || '';
     } catch (e) {
-      publicIP = '(could not detect)';
+      console.log('Port forward info fetch failed:', e);
     }
     detectingIP = false;
-  }
 
-  // Auto-detect IP when switching to direct mode
-  $: if (mode === 'direct' && !publicIP) {
-    detectIP();
+    // Auto-try UPnP
+    tryUPnP();
+  });
+
+  async function tryUPnP() {
+    upnpStatus = 'trying';
+    try {
+      const result = await window.go.main.App.TryUPnP(port);
+      upnpStatus = result.success ? 'success' : 'failed';
+    } catch (e) {
+      upnpStatus = 'failed';
+    }
   }
 
   async function createLobby() {
@@ -52,13 +65,13 @@
     creating = true;
 
     try {
-      const lobby = await window.go.main.App.CreateLobbyWithMode(name, game, maxPlayers, mode, directPort);
+      const lobby = await window.go.main.App.CreateLobby(name, game, maxPlayers, port);
       if (lobby) {
         dispatch('created', lobby);
         return;
       }
     } catch (e) {
-      console.log('Create lobby fallback (dev mode)', e);
+      console.log('Create lobby error:', e);
     }
 
     creating = false;
@@ -67,8 +80,8 @@
 
 <div class="create">
   <div class="create-card">
-    <h2>🧀 Create Lobby</h2>
-    <p class="subtitle">Set up a room for your friends to join</p>
+    <h2>🧀 Host a Lobby</h2>
+    <p class="subtitle">You'll host the game — friends connect directly to you (P2P)</p>
 
     <div class="form">
       <div class="field">
@@ -92,51 +105,6 @@
       </div>
 
       <div class="field">
-        <label>Connection Mode</label>
-        <div class="mode-selector">
-          <button 
-            class="mode-opt" 
-            class:active={mode === 'direct'}
-            on:click={() => mode = 'direct'}
-          >
-            <span class="mode-icon">⚡</span>
-            <span class="mode-label">Direct (Best Latency)</span>
-          </button>
-          <button 
-            class="mode-opt" 
-            class:active={mode === 'relay'}
-            on:click={() => mode = 'relay'}
-          >
-            <span class="mode-icon">☁️</span>
-            <span class="mode-label">Relay (No Port Forward)</span>
-          </button>
-        </div>
-        {#if mode === 'direct'}
-          <div class="direct-info">
-            <div class="direct-row">
-              <span class="direct-label">Your Public IP</span>
-              <span class="direct-value mono">
-                {#if detectingIP}detecting...{:else}{publicIP || '--'}{/if}
-              </span>
-            </div>
-            <div class="direct-row">
-              <span class="direct-label">UDP Port</span>
-              <input 
-                type="number" 
-                class="port-input" 
-                bind:value={directPort} 
-                min="1024" 
-                max="65535"
-              />
-            </div>
-            <p class="direct-hint">
-              ℹ️ Forward UDP port {directPort} on your router to this machine, or let UPnP handle it automatically.
-            </p>
-          </div>
-        {/if}
-      </div>
-
-      <div class="field">
         <label for="max">Max Players</label>
         <div class="player-selector">
           {#each [2, 4, 8, 16] as n}
@@ -151,6 +119,69 @@
         </div>
       </div>
 
+      <div class="field">
+        <label>Port Forwarding</label>
+        <div class="port-forward-card">
+          <div class="pf-status">
+            {#if upnpStatus === 'trying'}
+              <span class="pf-badge pf-trying">⏳ Trying UPnP auto-forward...</span>
+            {:else if upnpStatus === 'success'}
+              <span class="pf-badge pf-success">✅ Port forwarded automatically via UPnP</span>
+            {:else if upnpStatus === 'failed'}
+              <span class="pf-badge pf-manual">⚠️ Manual port forward required</span>
+            {:else}
+              <span class="pf-badge pf-trying">Checking...</span>
+            {/if}
+          </div>
+
+          <div class="pf-details">
+            <div class="pf-row">
+              <span class="pf-label">Your Public IP</span>
+              <span class="pf-value mono">
+                {#if detectingIP}detecting...{:else}{publicIP || 'unknown'}{/if}
+              </span>
+            </div>
+            <div class="pf-row">
+              <span class="pf-label">Your Local IP</span>
+              <span class="pf-value mono">{localIP || 'unknown'}</span>
+            </div>
+            <div class="pf-row">
+              <span class="pf-label">UDP Port</span>
+              <input 
+                type="number" 
+                class="port-input" 
+                bind:value={port} 
+                min="1024" 
+                max="65535"
+              />
+            </div>
+            {#if gatewayIP}
+              <div class="pf-row">
+                <span class="pf-label">Router</span>
+                <span class="pf-value">
+                  <a href="http://{gatewayIP}" target="_blank" class="router-link mono">{gatewayIP}</a>
+                </span>
+              </div>
+            {/if}
+          </div>
+
+          {#if upnpStatus === 'failed'}
+            <div class="pf-instructions">
+              <p class="pf-heading">📋 Manual Setup:</p>
+              <ol>
+                <li>Open your router admin page: <a href="http://{gatewayIP}" target="_blank" class="router-link">{gatewayIP}</a></li>
+                <li>Find "Port Forwarding" or "NAT" settings</li>
+                <li>Add a rule: <strong>UDP port {port}</strong> → <strong class="mono">{localIP}</strong></li>
+                <li>Save and come back here</li>
+              </ol>
+              <p class="pf-help">
+                Need help? <a href="https://portforward.com/router.htm" target="_blank" class="help-link">portforward.com</a> has guides for every router.
+              </p>
+            </div>
+          {/if}
+        </div>
+      </div>
+
       <div class="actions">
         <button class="btn btn-cancel" on:click={() => dispatch('cancel')}>Cancel</button>
         <button 
@@ -158,7 +189,7 @@
           on:click={createLobby}
           disabled={!name.trim() || creating}
         >
-          {creating ? 'Creating...' : 'Create Lobby'}
+          {creating ? 'Starting Hub...' : '⚡ Create & Host'}
         </button>
       </div>
     </div>
@@ -176,7 +207,7 @@
     background: var(--bg-card);
     border: 1px solid var(--border);
     padding: 32px;
-    width: 420px;
+    width: 480px;
   }
 
   h2 {
@@ -215,83 +246,6 @@
     width: 100%;
   }
 
-  .mode-selector {
-    display: flex;
-    gap: 0;
-  }
-
-  .mode-opt {
-    flex: 1;
-    padding: 10px 12px;
-    background: var(--bg-input);
-    color: var(--text-secondary);
-    border: 1px solid var(--border);
-    font-weight: 500;
-    font-size: 12px;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    justify-content: center;
-    transition: all 0.15s;
-  }
-
-  .mode-opt:not(:first-child) {
-    border-left: none;
-  }
-
-  .mode-opt.active {
-    background: var(--green);
-    color: #000;
-    border-color: var(--green);
-    font-weight: 700;
-  }
-
-  .mode-opt:hover:not(.active) {
-    background: var(--bg-card-hover);
-  }
-
-  .mode-icon {
-    font-size: 14px;
-  }
-
-  .direct-info {
-    margin-top: 10px;
-    padding: 12px;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border);
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  .direct-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    font-size: 12px;
-  }
-
-  .direct-label {
-    color: var(--text-muted);
-  }
-
-  .direct-value {
-    color: var(--text-primary);
-  }
-
-  .port-input {
-    width: 80px;
-    padding: 4px 8px;
-    font-size: 12px;
-    text-align: right;
-  }
-
-  .direct-hint {
-    font-size: 11px;
-    color: var(--text-muted);
-    line-height: 1.4;
-  }
-
   .player-selector {
     display: flex;
     gap: 0;
@@ -320,6 +274,116 @@
 
   .player-opt:hover:not(.active) {
     background: var(--bg-card-hover);
+  }
+
+  /* Port Forwarding Card */
+  .port-forward-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .pf-status {
+    margin-bottom: 2px;
+  }
+
+  .pf-badge {
+    font-size: 12px;
+    font-weight: 600;
+    padding: 4px 8px;
+  }
+
+  .pf-success {
+    color: var(--green);
+    background: rgba(16, 185, 129, 0.1);
+  }
+
+  .pf-manual {
+    color: #f59e0b;
+    background: rgba(245, 158, 11, 0.1);
+  }
+
+  .pf-trying {
+    color: var(--text-muted);
+  }
+
+  .pf-details {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .pf-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 12px;
+  }
+
+  .pf-label {
+    color: var(--text-muted);
+  }
+
+  .pf-value {
+    color: var(--text-primary);
+  }
+
+  .port-input {
+    width: 80px;
+    padding: 4px 8px;
+    font-size: 12px;
+    text-align: right;
+  }
+
+  .router-link {
+    color: var(--green);
+    text-decoration: none;
+  }
+
+  .router-link:hover {
+    text-decoration: underline;
+  }
+
+  .pf-instructions {
+    border-top: 1px solid var(--border);
+    padding-top: 12px;
+  }
+
+  .pf-heading {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+  }
+
+  .pf-instructions ol {
+    margin: 0;
+    padding-left: 20px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.7;
+  }
+
+  .pf-instructions li {
+    margin-bottom: 2px;
+  }
+
+  .pf-help {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 8px;
+  }
+
+  .help-link {
+    color: var(--green);
+    text-decoration: none;
+  }
+
+  .help-link:hover {
+    text-decoration: underline;
   }
 
   .actions {

@@ -6,12 +6,8 @@ export function CheckPermissions() {
   return window['go']['main']['App']['CheckPermissions']();
 }
 
-export function CreateLobby(arg1, arg2, arg3) {
-  return window['go']['main']['App']['CreateLobby'](arg1, arg2, arg3);
-}
-
-export function CreateLobbyWithMode(arg1, arg2, arg3, arg4, arg5) {
-  return window['go']['main']['App']['CreateLobbyWithMode'](arg1, arg2, arg3, arg4, arg5);
+export function CreateLobby(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['CreateLobby'](arg1, arg2, arg3, arg4);
 }
 
 export function DetectPublicIP() {
@@ -32,6 +28,10 @@ export function GetLobbies() {
 
 export function GetLobby(arg1) {
   return window['go']['main']['App']['GetLobby'](arg1);
+}
+
+export function GetPortForwardInfo(arg1) {
+  return window['go']['main']['App']['GetPortForwardInfo'](arg1);
 }
 
 export function GetServerPing() {

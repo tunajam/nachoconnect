@@ -9,17 +9,13 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
-// Server is the NachoConnect lobby/matchmaking server with integrated WebSocket relay
+// Server is the NachoConnect lobby directory (matchmaking only, no data relay).
+// All game traffic flows directly between peers via Direct Connect P2P.
 type Server struct {
-	mu          sync.RWMutex
-	lobbies     map[string]*ServerLobby
-	nextHubPort int
-	relayMu     sync.RWMutex
-	relayPeers  map[string]*RelayPeer
+	mu      sync.RWMutex
+	lobbies map[string]*ServerLobby
 }
 
 type ServerLobby struct {
@@ -31,11 +27,8 @@ type ServerLobby struct {
 	MaxPlayers   int            `json:"maxPlayers"`
 	Code         string         `json:"code"`
 	Region       string         `json:"region"`
-	Mode         string         `json:"mode"`                   // "relay" or "direct"
-	HubAddr      string         `json:"hubAddr"`
-	HubPort      int            `json:"hubPort"`
-	HostPublicIP string         `json:"hostPublicIP,omitempty"` // Direct mode
-	HostPort     int            `json:"hostPort,omitempty"`     // Direct mode
+	HostPublicIP string         `json:"hostPublicIP,omitempty"`
+	HostPort     int            `json:"hostPort,omitempty"`
 	Players      []ServerPlayer `json:"players"`
 	CreatedAt    time.Time      `json:"createdAt"`
 }
@@ -53,7 +46,6 @@ type CreateLobbyReq struct {
 	Game         string `json:"game"`
 	Host         string `json:"host"`
 	MaxPlayers   int    `json:"maxPlayers"`
-	Mode         string `json:"mode,omitempty"`
 	HostPublicIP string `json:"hostPublicIP,omitempty"`
 	HostPort     int    `json:"hostPort,omitempty"`
 }
@@ -74,31 +66,16 @@ type PingUpdateReq struct {
 	Ping    int    `json:"ping"`
 }
 
-// RelayPeer is a WebSocket peer in the relay
-type RelayPeer struct {
-	Conn     *websocket.Conn
-	LobbyID  string
-	LastSeen time.Time
-}
-
-var wsUpgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
-}
-
 func NewServer() *Server {
 	return &Server{
-		lobbies:     make(map[string]*ServerLobby),
-		nextHubPort: 1338,
-		relayPeers:  make(map[string]*RelayPeer),
+		lobbies: make(map[string]*ServerLobby),
 	}
 }
 
-// normalizeCode uppercases and trims an invite code for case-insensitive matching
 func normalizeCode(code string) string {
 	return strings.ToUpper(strings.TrimSpace(code))
 }
 
-// findLobbyByCode finds a lobby by its invite code (case-insensitive)
 func (s *Server) findLobbyByCode(code string) *ServerLobby {
 	norm := normalizeCode(code)
 	for _, l := range s.lobbies {
@@ -111,8 +88,6 @@ func (s *Server) findLobbyByCode(code string) *ServerLobby {
 
 func main() {
 	s := NewServer()
-
-	// Start lobby expiry goroutine (clean up lobbies with no players after 5 minutes)
 	go s.expiryLoop()
 
 	mux := http.NewServeMux()
@@ -121,19 +96,17 @@ func main() {
 	mux.HandleFunc("/api/lobbies/join", s.handleJoinLobby)
 	mux.HandleFunc("/api/lobbies/leave", s.handleLeaveLobby)
 	mux.HandleFunc("/api/lobbies/ping", s.handlePingUpdate)
-	mux.HandleFunc("/api/lobbies/", s.handleGetLobby) // /api/lobbies/<id>
-	mux.HandleFunc("/api/code/", s.handleGetByCode)   // /api/code/<code>
-	mux.HandleFunc("/api/join/", s.handleJoinByCode)   // /api/join/<code>?player=X
+	mux.HandleFunc("/api/lobbies/", s.handleGetLobby)
+	mux.HandleFunc("/api/code/", s.handleGetByCode)
+	mux.HandleFunc("/api/join/", s.handleJoinByCode)
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "version": "0.1.0"})
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "version": "0.2.0"})
 	})
-	mux.HandleFunc("/relay", s.handleRelay)
 
-	// CORS middleware
 	handler := corsMiddleware(mux)
 
 	port := 8420
-	log.Printf("🧀 NachoConnect server starting on :%d", port)
+	log.Printf("🧀 NachoConnect lobby server starting on :%d (matchmaking only, no relay)", port)
 	if err := http.ListenAndServe(fmt.Sprintf(":%d", port), handler); err != nil {
 		log.Fatal(err)
 	}
@@ -189,15 +162,6 @@ func (s *Server) handleCreateLobby(w http.ResponseWriter, r *http.Request) {
 	id := fmt.Sprintf("lobby-%s", randString(8))
 	code := s.generateUniqueCode()
 
-	// Determine connection mode
-	mode := req.Mode
-	if mode == "" {
-		mode = "relay"
-	}
-
-	hubPort := 1337
-	hubAddr := "nachoconnect-server.gentlepebble-471fc641.westus2.azurecontainerapps.io"
-
 	lobby := &ServerLobby{
 		ID:           id,
 		Name:         req.Name,
@@ -207,9 +171,6 @@ func (s *Server) handleCreateLobby(w http.ResponseWriter, r *http.Request) {
 		MaxPlayers:   req.MaxPlayers,
 		Code:         code,
 		Region:       "Auto",
-		Mode:         mode,
-		HubAddr:      hubAddr,
-		HubPort:      hubPort,
 		HostPublicIP: req.HostPublicIP,
 		HostPort:     req.HostPort,
 		Players: []ServerPlayer{
@@ -219,7 +180,7 @@ func (s *Server) handleCreateLobby(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.lobbies[id] = lobby
-	log.Printf("lobby created: %s (%s) by %s", lobby.Name, id, req.Host)
+	log.Printf("lobby created: %s (%s) by %s [%s:%d]", lobby.Name, id, req.Host, req.HostPublicIP, req.HostPort)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(lobby)
@@ -249,7 +210,6 @@ func (s *Server) handleJoinLobby(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "lobby full", http.StatusConflict)
 		return
 	}
-	// Check if player already in lobby
 	for _, p := range l.Players {
 		if p.Name == req.Player {
 			w.Header().Set("Content-Type", "application/json")
@@ -298,7 +258,6 @@ func (s *Server) handleLeaveLobby(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// If host left, promote next player or delete lobby
 	if len(l.Players) == 0 {
 		delete(s.lobbies, req.LobbyID)
 		log.Printf("lobby deleted (empty): %s", req.LobbyID)
@@ -345,7 +304,6 @@ func (s *Server) handlePingUpdate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetLobby(w http.ResponseWriter, r *http.Request) {
-	// Extract lobby ID from path: /api/lobbies/<id>
 	path := strings.TrimPrefix(r.URL.Path, "/api/lobbies/")
 	if path == "" || path == r.URL.Path {
 		http.Error(w, "lobby ID required", http.StatusBadRequest)
@@ -365,66 +323,6 @@ func (s *Server) handleGetLobby(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(l)
 }
 
-func (s *Server) handleRelay(w http.ResponseWriter, r *http.Request) {
-	lobbyID := r.URL.Query().Get("lobby")
-	conn, err := wsUpgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Printf("WebSocket upgrade failed: %v", err)
-		return
-	}
-
-	key := conn.RemoteAddr().String()
-
-	s.relayMu.Lock()
-	s.relayPeers[key] = &RelayPeer{
-		Conn:     conn,
-		LobbyID:  lobbyID,
-		LastSeen: time.Now(),
-	}
-	count := len(s.relayPeers)
-	s.relayMu.Unlock()
-
-	log.Printf("relay peer connected: %s lobby=%s (total: %d)", key, lobbyID, count)
-
-	defer func() {
-		s.relayMu.Lock()
-		delete(s.relayPeers, key)
-		s.relayMu.Unlock()
-		conn.Close()
-		log.Printf("relay peer disconnected: %s", key)
-	}()
-
-	for {
-		msgType, data, err := conn.ReadMessage()
-		if err != nil {
-			break
-		}
-		if msgType != websocket.BinaryMessage {
-			continue
-		}
-
-		s.relayMu.Lock()
-		if p, ok := s.relayPeers[key]; ok {
-			p.LastSeen = time.Now()
-		}
-		s.relayMu.Unlock()
-
-		// Forward to all other peers in the same lobby
-		s.relayMu.RLock()
-		for peerKey, p := range s.relayPeers {
-			if peerKey == key {
-				continue
-			}
-			if lobbyID != "" && p.LobbyID != "" && p.LobbyID != lobbyID {
-				continue
-			}
-			_ = p.Conn.WriteMessage(websocket.BinaryMessage, data)
-		}
-		s.relayMu.RUnlock()
-	}
-}
-
-// handleGetByCode returns lobby info for a given invite code: GET /api/code/<code>
 func (s *Server) handleGetByCode(w http.ResponseWriter, r *http.Request) {
 	code := strings.TrimPrefix(r.URL.Path, "/api/code/")
 	if code == "" {
@@ -445,7 +343,6 @@ func (s *Server) handleGetByCode(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(l)
 }
 
-// handleJoinByCode joins a lobby by invite code via GET: GET /api/join/<code>?player=<name>
 func (s *Server) handleJoinByCode(w http.ResponseWriter, r *http.Request) {
 	code := strings.TrimPrefix(r.URL.Path, "/api/join/")
 	player := r.URL.Query().Get("player")
@@ -485,16 +382,14 @@ func (s *Server) handleJoinByCode(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(l)
 }
 
-// generateUniqueCode creates a NACHO-XXXX code with 4 alphanumeric chars, ensuring uniqueness
 func (s *Server) generateUniqueCode() string {
-	const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" // no I/O/0/1 to avoid confusion
+	const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 	for attempt := 0; attempt < 100; attempt++ {
 		b := make([]byte, 4)
 		for i := range b {
 			b[i] = chars[rand.Intn(len(chars))]
 		}
 		code := "NACHO-" + string(b)
-		// Check uniqueness
 		found := false
 		for _, l := range s.lobbies {
 			if l.Code == code {
@@ -506,7 +401,6 @@ func (s *Server) generateUniqueCode() string {
 			return code
 		}
 	}
-	// Fallback: use longer code
 	b := make([]byte, 6)
 	const chars2 = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 	for i := range b {

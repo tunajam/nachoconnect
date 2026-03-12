@@ -9,10 +9,10 @@ import (
 	"time"
 )
 
-// ServerURL is the Azure lobby server base URL
+// ServerURL is the lobby directory server base URL
 var ServerURL = "https://nachoconnect-server.gentlepebble-471fc641.westus2.azurecontainerapps.io"
 
-// Client communicates with the remote lobby server
+// Client communicates with the remote lobby server (matchmaking only, no relay)
 type Client struct {
 	baseURL    string
 	httpClient *http.Client
@@ -28,11 +28,8 @@ type ServerLobby struct {
 	MaxPlayers   int            `json:"maxPlayers"`
 	Code         string         `json:"code"`
 	Region       string         `json:"region"`
-	Mode         string         `json:"mode"`                   // "relay" or "direct"
-	HubAddr      string         `json:"hubAddr,omitempty"`
-	HubPort      int            `json:"hubPort,omitempty"`
-	HostPublicIP string         `json:"hostPublicIP,omitempty"` // Direct mode: host's public IP
-	HostPort     int            `json:"hostPort,omitempty"`     // Direct mode: host's UDP port
+	HostPublicIP string         `json:"hostPublicIP,omitempty"` // Host's public IP for Direct Connect
+	HostPort     int            `json:"hostPort,omitempty"`     // Host's UDP port for Direct Connect
 	Players      []ServerPlayer `json:"players"`
 	CreatedAt    time.Time      `json:"createdAt"`
 }
@@ -51,9 +48,8 @@ type createLobbyReq struct {
 	Game         string `json:"game"`
 	Host         string `json:"host"`
 	MaxPlayers   int    `json:"maxPlayers"`
-	Mode         string `json:"mode,omitempty"`         // "relay" or "direct"
-	HostPublicIP string `json:"hostPublicIP,omitempty"` // Direct mode
-	HostPort     int    `json:"hostPort,omitempty"`     // Direct mode
+	HostPublicIP string `json:"hostPublicIP,omitempty"`
+	HostPort     int    `json:"hostPort,omitempty"`
 }
 
 type joinLobbyReq struct {
@@ -104,22 +100,13 @@ func (c *Client) ListLobbies() ([]ServerLobby, error) {
 	return lobbies, nil
 }
 
-// CreateLobby creates a new lobby on the remote server
-func (c *Client) CreateLobby(name, game, host string, maxPlayers int) (*ServerLobby, error) {
-	return c.CreateLobbyWithMode(name, game, host, maxPlayers, "relay", "", 0)
-}
-
-// CreateLobbyWithMode creates a lobby with a specific connection mode
-func (c *Client) CreateLobbyWithMode(name, game, host string, maxPlayers int, mode, hostPublicIP string, hostPort int) (*ServerLobby, error) {
-	if mode == "" {
-		mode = "relay"
-	}
+// CreateLobby creates a new lobby on the server with the host's Direct Connect info
+func (c *Client) CreateLobby(name, game, host string, maxPlayers int, hostPublicIP string, hostPort int) (*ServerLobby, error) {
 	body, _ := json.Marshal(createLobbyReq{
 		Name:         name,
 		Game:         game,
 		Host:         host,
 		MaxPlayers:   maxPlayers,
-		Mode:         mode,
 		HostPublicIP: hostPublicIP,
 		HostPort:     hostPort,
 	})
@@ -251,7 +238,7 @@ func (c *Client) GetByCode(code string) (*ServerLobby, error) {
 	return &lobby, nil
 }
 
-// Ping measures HTTP latency to the lobby server (as a proxy for real ping)
+// Ping measures HTTP latency to the lobby server
 func (c *Client) Ping() (time.Duration, error) {
 	start := time.Now()
 	resp, err := c.httpClient.Get(c.baseURL + "/api/health")

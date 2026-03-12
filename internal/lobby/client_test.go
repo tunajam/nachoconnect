@@ -45,7 +45,7 @@ func (ts *testServer) handleCreate(w http.ResponseWriter, r *http.Request) {
 	l := &ServerLobby{
 		ID: id, Name: req.Name, Game: req.Game, Host: req.Host,
 		MaxPlayers: req.MaxPlayers, Code: code, Region: "Test",
-		HubAddr: "localhost", HubPort: 1337,
+		HostPublicIP: "", HostPort: 0,
 		Players:   []ServerPlayer{{Name: req.Host, IsHost: true, JoinedAt: time.Now()}},
 		CreatedAt: time.Now(),
 	}
@@ -161,7 +161,7 @@ func TestClientCreateAndList(t *testing.T) {
 	}
 
 	// Create
-	l, err := c.CreateLobby("Halo Room", "Halo 2", "Player1", 4)
+	l, err := c.CreateLobby("Halo Room", "Halo 2", "Player1", 4, "", 0)
 	if err != nil {
 		t.Fatalf("CreateLobby: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestClientJoinLobby(t *testing.T) {
 	defer srv.Close()
 	c := NewClient(srv.URL)
 
-	l, _ := c.CreateLobby("Room", "Game", "Host", 2)
+	l, _ := c.CreateLobby("Room", "Game", "Host", 2, "", 0)
 
 	joined, err := c.JoinLobby(l.Code, "Guest")
 	if err != nil {
@@ -220,7 +220,7 @@ func TestClientLeaveLobby(t *testing.T) {
 	defer srv.Close()
 	c := NewClient(srv.URL)
 
-	l, _ := c.CreateLobby("Room", "Game", "Host", 4)
+	l, _ := c.CreateLobby("Room", "Game", "Host", 4, "", 0)
 	c.JoinLobby(l.Code, "Guest")
 
 	err := c.LeaveLobby(l.ID, "Guest")
@@ -244,7 +244,7 @@ func TestClientGetLobby(t *testing.T) {
 	defer srv.Close()
 	c := NewClient(srv.URL)
 
-	l, _ := c.CreateLobby("Room", "Game", "Host", 4)
+	l, _ := c.CreateLobby("Room", "Game", "Host", 4, "", 0)
 
 	got, err := c.GetLobby(l.ID)
 	if err != nil {
@@ -266,7 +266,7 @@ func TestClientUpdatePing(t *testing.T) {
 	defer srv.Close()
 	c := NewClient(srv.URL)
 
-	l, _ := c.CreateLobby("Room", "Game", "Host", 4)
+	l, _ := c.CreateLobby("Room", "Game", "Host", 4, "", 0)
 
 	err := c.UpdatePing(l.ID, "Host", 42)
 	if err != nil {
@@ -303,7 +303,7 @@ func TestClientServerDown(t *testing.T) {
 		t.Error("expected error when server is down")
 	}
 
-	_, err = c.CreateLobby("x", "x", "x", 1)
+	_, err = c.CreateLobby("x", "x", "x", 1, "", 0)
 	if err == nil {
 		t.Error("expected error when server is down")
 	}

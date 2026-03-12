@@ -62,9 +62,6 @@ export namespace main {
 	    ping: number;
 	    region: string;
 	    code: string;
-	    mode: string;
-	    hubAddr: string;
-	    hubPort: number;
 	    hostPublicIP: string;
 	    hostPort: number;
 	    members: PlayerInfo[];
@@ -84,9 +81,6 @@ export namespace main {
 	        this.ping = source["ping"];
 	        this.region = source["region"];
 	        this.code = source["code"];
-	        this.mode = source["mode"];
-	        this.hubAddr = source["hubAddr"];
-	        this.hubPort = source["hubPort"];
 	        this.hostPublicIP = source["hostPublicIP"];
 	        this.hostPort = source["hostPort"];
 	        this.members = this.convertValues(source["members"], PlayerInfo);
@@ -140,6 +134,27 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.ok = source["ok"];
 	        this.message = source["message"];
+	    }
+	}
+	
+	export class PortForwardInfo {
+	    publicIP: string;
+	    localIP: string;
+	    port: number;
+	    gatewayIP: string;
+	    upnpStatus: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PortForwardInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.publicIP = source["publicIP"];
+	        this.localIP = source["localIP"];
+	        this.port = source["port"];
+	        this.gatewayIP = source["gatewayIP"];
+	        this.upnpStatus = source["upnpStatus"];
 	    }
 	}
 
