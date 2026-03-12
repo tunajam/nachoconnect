@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { createEventDispatcher } from 'svelte';
   
   const dispatch = createEventDispatcher();
@@ -7,56 +7,102 @@
   let lobbies = [];
   let joinCode = '';
   let loading = true;
+  let serverPing = 0;
+  let error = '';
+  let refreshInterval;
 
   const gameIcons = {
     'Halo 2': '🎯',
     'Halo: CE': '🔫',
+    'Halo: Combat Evolved': '🔫',
     'Crimson Skies': '✈️',
     'MechAssault': '🤖',
+    'MechAssault 2': '🤖',
     'Splinter Cell: CT': '🕵️',
+    'Splinter Cell: Chaos Theory': '🕵️',
+    'Splinter Cell: Pandora Tomorrow': '🕵️',
     'Star Wars: Battlefront': '⭐',
+    'Star Wars: Battlefront II': '⭐',
     'Counter-Strike': '💣',
     'TimeSplitters 2': '⏰',
+    'TimeSplitters: Future Perfect': '⏰',
+    'Doom 3': '👹',
+    'Rainbow Six 3': '🌈',
+    'Ghost Recon': '👻',
+    'Burnout 3: Takedown': '🏎️',
+    'Forza Motorsport': '🏁',
   };
 
   onMount(async () => {
-    try {
-      const result = await window.go.main.App.GetLobbies();
-      if (result) lobbies = result;
-    } catch (e) {
-      // Dev mode - use demo data
-      lobbies = [
-        { id: 'demo-0', name: 'Friday Fragfest', game: 'Halo 2', host: 'SpartanChief', players: 4, maxPlayers: 8, ping: 32, region: 'NA-East', code: 'NACHO-1337' },
-        { id: 'demo-1', name: 'Sky Pirates', game: 'Crimson Skies', host: 'AcePilot99', players: 2, maxPlayers: 4, ping: 45, region: 'EU-West', code: 'NACHO-2468' },
-        { id: 'demo-2', name: 'Mech Madness', game: 'MechAssault', host: 'MechWarrior', players: 3, maxPlayers: 4, ping: 78, region: 'NA-West', code: 'NACHO-9001' },
-        { id: 'demo-3', name: 'LAN Party', game: 'Halo: CE', host: 'RetroGamer42', players: 6, maxPlayers: 16, ping: 21, region: 'NA-East', code: 'NACHO-4200' },
-        { id: 'demo-4', name: 'Spies vs Mercs', game: 'Splinter Cell: CT', host: 'ShadowAgent', players: 2, maxPlayers: 8, ping: 38, region: 'NA-East', code: 'NACHO-0007' },
-      ];
+    await fetchLobbies();
+
+    // Refresh lobbies every 10 seconds
+    refreshInterval = setInterval(fetchLobbies, 10000);
+
+    if (window.runtime) {
+      window.runtime.EventsOn('ping:update', (ping) => {
+        serverPing = ping;
+      });
     }
-    loading = false;
   });
 
+  onDestroy(() => {
+    if (refreshInterval) clearInterval(refreshInterval);
+  });
+
+  async function fetchLobbies() {
+    try {
+      const result = await window.go.main.App.GetLobbies();
+      if (result) {
+        lobbies = result;
+        error = '';
+      } else {
+        lobbies = [];
+      }
+    } catch (e) {
+      error = 'Unable to reach lobby server';
+      lobbies = [];
+    }
+    loading = false;
+  }
+
   function getPingColor(ping) {
+    if (ping === 0) return 'var(--text-muted)';
     if (ping < 50) return 'var(--green)';
     if (ping < 100) return 'var(--yellow)';
     return 'var(--red)';
   }
 
   function getPingDot(ping) {
+    if (ping === 0) return '⚪';
     if (ping < 50) return '🟢';
     if (ping < 100) return '🟡';
     return '🔴';
   }
 
-  function joinByCode() {
+  async function joinByCode() {
     if (!joinCode.trim()) return;
-    const lobby = lobbies.find(l => l.code === joinCode.trim().toUpperCase());
-    if (lobby) {
-      dispatch('join', lobby);
+    try {
+      const lobby = await window.go.main.App.JoinLobby(joinCode.trim().toUpperCase());
+      if (lobby) {
+        dispatch('join', lobby);
+        return;
+      }
+    } catch (e) {
+      error = `Failed to join: ${e}`;
     }
   }
 
-  function joinLobby(lobby) {
+  async function joinLobby(lobby) {
+    try {
+      const result = await window.go.main.App.JoinLobby(lobby.code);
+      if (result) {
+        dispatch('join', result);
+        return;
+      }
+    } catch (e) {
+      error = `Failed to join: ${e}`;
+    }
     dispatch('join', lobby);
   }
 </script>
@@ -65,7 +111,12 @@
   <div class="browser-header">
     <div class="browser-title">
       <h2>🎮 Active Lobbies</h2>
-      <span class="count">{lobbies.length} rooms</span>
+      <span class="count">{lobbies.length} room{lobbies.length !== 1 ? 's' : ''}</span>
+      {#if serverPing > 0}
+        <span class="server-ping mono" style="color: {getPingColor(serverPing)}">
+          {serverPing}ms to server
+        </span>
+      {/if}
     </div>
     <div class="browser-actions">
       <div class="join-code">
@@ -82,6 +133,10 @@
       </button>
     </div>
   </div>
+
+  {#if error}
+    <div class="error-msg">{error}</div>
+  {/if}
 
   {#if loading}
     <div class="loading">
@@ -117,9 +172,9 @@
               <span class="player-count">{lobby.players}/{lobby.maxPlayers}</span>
               <span class="player-label">players</span>
             </div>
-            <div class="ping" style="color: {getPingColor(lobby.ping)}">
-              <span class="ping-dot">{getPingDot(lobby.ping)}</span>
-              <span class="ping-value mono">{lobby.ping}ms</span>
+            <div class="ping" style="color: {getPingColor(serverPing)}">
+              <span class="ping-dot">{getPingDot(serverPing)}</span>
+              <span class="ping-value mono">{serverPing > 0 ? serverPing + 'ms' : '--'}</span>
             </div>
             <div class="region mono">{lobby.region}</div>
           </div>
@@ -159,6 +214,10 @@
   .count {
     font-size: 12px;
     color: var(--text-muted);
+  }
+
+  .server-ping {
+    font-size: 11px;
   }
 
   .browser-actions {
@@ -208,6 +267,15 @@
   .btn-secondary:hover {
     background: var(--bg-card-hover);
     border-color: var(--border-hover);
+  }
+
+  .error-msg {
+    background: rgba(239, 68, 68, 0.1);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    color: #ef4444;
+    padding: 8px 12px;
+    font-size: 12px;
+    margin-bottom: 12px;
   }
 
   .lobby-list {

@@ -42,19 +42,7 @@
       console.log('Create lobby fallback (dev mode)');
     }
 
-    // Fallback for dev mode
-    dispatch('created', {
-      id: 'new-' + Date.now(),
-      name,
-      game,
-      host: 'You',
-      players: 1,
-      maxPlayers,
-      ping: 0,
-      region: 'Local',
-      code: 'NACHO-' + String(Math.floor(Math.random() * 10000)).padStart(4, '0'),
-      members: [{ name: 'You', ping: 0, isHost: true, isYou: true, connected: true }],
-    });
+    creating = false;
   }
 </script>
 

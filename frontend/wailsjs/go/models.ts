@@ -9,6 +9,9 @@ export namespace main {
 	    localIP: string;
 	    publicIP: string;
 	    interface: string;
+	    gamertag: string;
+	    serverPing: number;
+	    error?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new AppStatus(source);
@@ -24,6 +27,9 @@ export namespace main {
 	        this.localIP = source["localIP"];
 	        this.publicIP = source["publicIP"];
 	        this.interface = source["interface"];
+	        this.gamertag = source["gamertag"];
+	        this.serverPing = source["serverPing"];
+	        this.error = source["error"];
 	    }
 	}
 	export class PlayerInfo {
@@ -56,6 +62,8 @@ export namespace main {
 	    ping: number;
 	    region: string;
 	    code: string;
+	    hubAddr: string;
+	    hubPort: number;
 	    members: PlayerInfo[];
 	
 	    static createFrom(source: any = {}) {
@@ -73,6 +81,8 @@ export namespace main {
 	        this.ping = source["ping"];
 	        this.region = source["region"];
 	        this.code = source["code"];
+	        this.hubAddr = source["hubAddr"];
+	        this.hubPort = source["hubPort"];
 	        this.members = this.convertValues(source["members"], PlayerInfo);
 	    }
 	
@@ -110,6 +120,20 @@ export namespace main {
 	        this.ip = source["ip"];
 	        this.mac = source["mac"];
 	        this.description = source["description"];
+	    }
+	}
+	export class PermissionStatus {
+	    ok: boolean;
+	    message: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PermissionStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ok = source["ok"];
+	        this.message = source["message"];
 	    }
 	}
 

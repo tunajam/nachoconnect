@@ -6,14 +6,16 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
 
 // Server is the NachoConnect lobby/matchmaking server
 type Server struct {
-	mu      sync.RWMutex
-	lobbies map[string]*ServerLobby
+	mu          sync.RWMutex
+	lobbies     map[string]*ServerLobby
+	nextHubPort int
 }
 
 type ServerLobby struct {
@@ -25,14 +27,17 @@ type ServerLobby struct {
 	MaxPlayers int            `json:"maxPlayers"`
 	Code       string         `json:"code"`
 	Region     string         `json:"region"`
+	HubAddr    string         `json:"hubAddr"`
+	HubPort    int            `json:"hubPort"`
 	Players    []ServerPlayer `json:"players"`
 	CreatedAt  time.Time      `json:"createdAt"`
 }
 
 type ServerPlayer struct {
-	Name     string `json:"name"`
-	Addr     string `json:"addr,omitempty"`
-	IsHost   bool   `json:"isHost"`
+	Name     string    `json:"name"`
+	Addr     string    `json:"addr,omitempty"`
+	IsHost   bool      `json:"isHost"`
+	Ping     int       `json:"ping"`
 	JoinedAt time.Time `json:"joinedAt"`
 }
 
@@ -48,19 +53,37 @@ type JoinLobbyReq struct {
 	Player string `json:"player"`
 }
 
+type LeaveLobbyReq struct {
+	LobbyID string `json:"lobbyId"`
+	Player  string `json:"player"`
+}
+
+type PingUpdateReq struct {
+	LobbyID string `json:"lobbyId"`
+	Player  string `json:"player"`
+	Ping    int    `json:"ping"`
+}
+
 func NewServer() *Server {
 	return &Server{
-		lobbies: make(map[string]*ServerLobby),
+		lobbies:     make(map[string]*ServerLobby),
+		nextHubPort: 1338, // Start assigning hub ports from 1338 (1337 is the default hub)
 	}
 }
 
 func main() {
 	s := NewServer()
 
+	// Start lobby expiry goroutine (clean up lobbies with no players after 5 minutes)
+	go s.expiryLoop()
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/lobbies", s.handleLobbies)
 	mux.HandleFunc("/api/lobbies/create", s.handleCreateLobby)
 	mux.HandleFunc("/api/lobbies/join", s.handleJoinLobby)
+	mux.HandleFunc("/api/lobbies/leave", s.handleLeaveLobby)
+	mux.HandleFunc("/api/lobbies/ping", s.handlePingUpdate)
+	mux.HandleFunc("/api/lobbies/", s.handleGetLobby) // /api/lobbies/<id>
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "version": "0.1.0"})
 	})
@@ -72,6 +95,22 @@ func main() {
 	log.Printf("🧀 NachoConnect server starting on :%d", port)
 	if err := http.ListenAndServe(fmt.Sprintf(":%d", port), handler); err != nil {
 		log.Fatal(err)
+	}
+}
+
+func (s *Server) expiryLoop() {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		s.mu.Lock()
+		now := time.Now()
+		for id, l := range s.lobbies {
+			if len(l.Players) == 0 && now.Sub(l.CreatedAt) > 5*time.Minute {
+				log.Printf("expiring empty lobby: %s (%s)", l.Name, id)
+				delete(s.lobbies, id)
+			}
+		}
+		s.mu.Unlock()
 	}
 }
 
@@ -109,6 +148,12 @@ func (s *Server) handleCreateLobby(w http.ResponseWriter, r *http.Request) {
 	id := fmt.Sprintf("lobby-%s", randString(8))
 	code := fmt.Sprintf("NACHO-%04d", rand.Intn(10000))
 
+	// Assign a hub port for this lobby
+	// In production, all lobbies share the same hub on port 1337 using lobby ID routing
+	// For now, assign sequential ports (the hub server will be updated to support multi-lobby)
+	hubPort := 1337 // Use single hub port — hub handles all lobbies
+	hubAddr := "nachoconnect-server.gentlepebble-471fc641.westus2.azurecontainerapps.io"
+
 	lobby := &ServerLobby{
 		ID:         id,
 		Name:       req.Name,
@@ -118,6 +163,8 @@ func (s *Server) handleCreateLobby(w http.ResponseWriter, r *http.Request) {
 		MaxPlayers: req.MaxPlayers,
 		Code:       code,
 		Region:     "Auto",
+		HubAddr:    hubAddr,
+		HubPort:    hubPort,
 		Players: []ServerPlayer{
 			{Name: req.Host, Addr: r.RemoteAddr, IsHost: true, JoinedAt: time.Now()},
 		},
@@ -125,6 +172,7 @@ func (s *Server) handleCreateLobby(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.lobbies[id] = lobby
+	log.Printf("lobby created: %s (%s) by %s", lobby.Name, id, req.Host)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(lobby)
@@ -151,12 +199,21 @@ func (s *Server) handleJoinLobby(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "lobby full", http.StatusConflict)
 				return
 			}
+			// Check if player already in lobby
+			for _, p := range l.Players {
+				if p.Name == req.Player {
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(l)
+					return
+				}
+			}
 			l.Players = append(l.Players, ServerPlayer{
 				Name:     req.Player,
 				Addr:     r.RemoteAddr,
 				IsHost:   false,
 				JoinedAt: time.Now(),
 			})
+			log.Printf("player %s joined lobby %s (%s)", req.Player, l.Name, l.ID)
 
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(l)
@@ -165,6 +222,102 @@ func (s *Server) handleJoinLobby(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Error(w, "lobby not found", http.StatusNotFound)
+}
+
+func (s *Server) handleLeaveLobby(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req LeaveLobbyReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	l, exists := s.lobbies[req.LobbyID]
+	if !exists {
+		http.Error(w, "lobby not found", http.StatusNotFound)
+		return
+	}
+
+	for i, p := range l.Players {
+		if p.Name == req.Player {
+			l.Players = append(l.Players[:i], l.Players[i+1:]...)
+			log.Printf("player %s left lobby %s (%s)", req.Player, l.Name, l.ID)
+			break
+		}
+	}
+
+	// If host left, promote next player or delete lobby
+	if len(l.Players) == 0 {
+		delete(s.lobbies, req.LobbyID)
+		log.Printf("lobby deleted (empty): %s", req.LobbyID)
+	} else if req.Player == l.Host {
+		l.Players[0].IsHost = true
+		l.Host = l.Players[0].Name
+		log.Printf("new host for %s: %s", l.Name, l.Host)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (s *Server) handlePingUpdate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req PingUpdateReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	l, exists := s.lobbies[req.LobbyID]
+	if !exists {
+		http.Error(w, "lobby not found", http.StatusNotFound)
+		return
+	}
+
+	for i, p := range l.Players {
+		if p.Name == req.Player {
+			l.Players[i].Ping = req.Ping
+			break
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleGetLobby(w http.ResponseWriter, r *http.Request) {
+	// Extract lobby ID from path: /api/lobbies/<id>
+	path := strings.TrimPrefix(r.URL.Path, "/api/lobbies/")
+	if path == "" || path == r.URL.Path {
+		http.Error(w, "lobby ID required", http.StatusBadRequest)
+		return
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	l, exists := s.lobbies[path]
+	if !exists {
+		http.Error(w, "lobby not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(l)
 }
 
 func corsMiddleware(next http.Handler) http.Handler {

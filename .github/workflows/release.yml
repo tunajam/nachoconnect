@@ -31,8 +31,21 @@ jobs:
       - name: Install libpcap
         run: brew install libpcap
 
+      - name: Compile l2tunnel (arm64)
+        run: |
+          cd lib/l2tunnel
+          make l2tunnel
+          file l2tunnel
+          cd ../..
+
       - name: Build macOS (arm64)
         run: wails build -platform darwin/arm64
+
+      - name: Bundle l2tunnel into app
+        run: |
+          mkdir -p build/bin/nachoconnect.app/Contents/Resources
+          cp lib/l2tunnel/l2tunnel build/bin/nachoconnect.app/Contents/Resources/l2tunnel
+          chmod +x build/bin/nachoconnect.app/Contents/Resources/l2tunnel
 
       - name: Create DMG
         run: |
@@ -80,8 +93,36 @@ jobs:
           echo "CGO_CFLAGS=-I${{ github.workspace }}\npcap-sdk\Include" >> $env:GITHUB_ENV
           echo "CGO_LDFLAGS=-L${{ github.workspace }}\npcap-sdk\Lib\x64" >> $env:GITHUB_ENV
 
+      - name: Download Npcap installer (OEM silent)
+        shell: powershell
+        run: |
+          # Note: Npcap OEM requires a license for redistribution.
+          # For open-source, we bundle a helper that prompts users to install from npcap.com
+          echo "Npcap must be installed separately by the user"
+
+      - name: Compile l2tunnel (Windows)
+        shell: bash
+        run: |
+          cd lib/l2tunnel
+          # Cross-compile for Windows using MinGW
+          x86_64-w64-mingw32-gcc -o l2tunnel.exe \
+            -Wall -O3 \
+            -DBUILD_DATE='"$(date -u)"' \
+            -DBUILD_VERSION='"$(git rev-parse --short HEAD)"' \
+            -I ../../npcap-sdk/Include \
+            -L ../../npcap-sdk/Lib/x64 \
+            l2tunnel.c -lwpcap -lws2_32 || echo "Windows l2tunnel build skipped (no MinGW)"
+          cd ../..
+
       - name: Build Windows (amd64)
         run: wails build -platform windows/amd64 -nsis
+
+      - name: Bundle l2tunnel into Windows build
+        shell: bash
+        run: |
+          if [ -f lib/l2tunnel/l2tunnel.exe ]; then
+            cp lib/l2tunnel/l2tunnel.exe build/bin/l2tunnel.exe
+          fi
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4

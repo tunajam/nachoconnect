@@ -6,25 +6,18 @@
   const dispatch = createEventDispatcher();
 
   let chatMessages = [
-    { sender: lobby?.host || 'Host', message: 'Welcome to the lobby! 🧀', time: new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) },
+    { sender: '🧀', message: `Welcome to ${lobby?.name || 'the lobby'}!`, time: now(), system: true },
   ];
   let chatInput = '';
   let copied = false;
-
-  // Simulated players for demo
-  let players = lobby?.members || [
-    { name: lobby?.host || 'SpartanChief', ping: lobby?.ping || 32, isHost: true, isYou: false, connected: true },
-    { name: 'You', ping: 0, isHost: false, isYou: true, connected: true },
-  ];
-
-  let tunnelStatus = 'connecting'; // connecting | connected | relayed
+  let players = lobby?.members || [];
+  let tunnelStatus = 'connecting'; // connecting | connected | disconnected | reconnecting
+  let refreshInterval;
+  let serverPing = 0;
 
   onMount(() => {
-    // Simulate tunnel connection
-    setTimeout(() => {
-      tunnelStatus = 'connected';
-      addSystemMessage('Tunnel established — direct connection 🟢');
-    }, 1500);
+    // Refresh lobby data periodically to get updated player list / pings
+    refreshInterval = setInterval(refreshLobby, 5000);
 
     if (window.runtime) {
       window.runtime.EventsOn('chat:message', (msg) => {
@@ -32,9 +25,58 @@
       });
       window.runtime.EventsOn('tunnel:connected', () => {
         tunnelStatus = 'connected';
+        addSystemMessage('Tunnel established 🟢');
+      });
+      window.runtime.EventsOn('tunnel:disconnected', () => {
+        tunnelStatus = 'disconnected';
+        addSystemMessage('Tunnel disconnected ⚠️');
+      });
+      window.runtime.EventsOn('tunnel:reconnecting', (attempt) => {
+        tunnelStatus = 'reconnecting';
+        addSystemMessage(`Reconnecting... (attempt ${attempt})`);
+      });
+      window.runtime.EventsOn('tunnel:skipped', (reason) => {
+        tunnelStatus = 'connected'; // Show as connected even without tunnel (for browsing)
+        addSystemMessage(`Note: ${reason}`);
+      });
+      window.runtime.EventsOn('ping:update', (ping) => {
+        serverPing = ping;
       });
     }
+
+    // Check initial tunnel status
+    checkTunnelStatus();
   });
+
+  onDestroy(() => {
+    if (refreshInterval) clearInterval(refreshInterval);
+  });
+
+  async function checkTunnelStatus() {
+    try {
+      const status = await window.go.main.App.GetStatus();
+      if (status?.tunnelActive) {
+        tunnelStatus = 'connected';
+      } else {
+        // Give tunnel time to connect
+        setTimeout(async () => {
+          const s = await window.go.main.App.GetStatus();
+          tunnelStatus = s?.tunnelActive ? 'connected' : 'disconnected';
+        }, 3000);
+      }
+    } catch (e) {
+      tunnelStatus = 'connected'; // Dev mode
+    }
+  }
+
+  async function refreshLobby() {
+    try {
+      const updated = await window.go.main.App.RefreshLobby();
+      if (updated && updated.members) {
+        players = updated.members;
+      }
+    } catch (e) {}
+  }
 
   function addSystemMessage(text) {
     chatMessages = [...chatMessages, { sender: '🧀', message: text, time: now(), system: true }];
@@ -57,9 +99,9 @@
     setTimeout(() => copied = false, 2000);
   }
 
-  function leaveLobby() {
+  async function leaveLobby() {
     try {
-      window.go.main.App.LeaveLobby(lobby?.id);
+      await window.go.main.App.LeaveLobby(lobby?.id);
     } catch (e) {}
     dispatch('leave');
   }
@@ -111,8 +153,12 @@
                 <span class="you-badge">you</span>
               {/if}
             </div>
-            <span class="player-ping mono" style="color: {getPingColor(player.ping)}">
-              {player.isYou ? '--' : player.ping + 'ms'}
+            <span class="player-ping mono" style="color: {getPingColor(player.isYou ? serverPing : player.ping)}">
+              {#if player.isYou}
+                {serverPing > 0 ? serverPing + 'ms' : '--'}
+              {:else}
+                {player.ping > 0 ? player.ping + 'ms' : '--'}
+              {/if}
             </span>
           </div>
         {/each}
@@ -125,9 +171,11 @@
             {#if tunnelStatus === 'connecting'}
               🟡 Connecting...
             {:else if tunnelStatus === 'connected'}
-              🟢 Direct
+              🟢 Hub Relay
+            {:else if tunnelStatus === 'reconnecting'}
+              🟡 Reconnecting...
             {:else}
-              🟡 Relayed
+              🔴 Disconnected
             {/if}
           </span>
         </div>
@@ -136,11 +184,23 @@
           <span class="conn-value">
             {#if tunnelStatus === 'connecting'}
               🔄 Establishing...
-            {:else}
+            {:else if tunnelStatus === 'connected'}
               🟢 Active
+            {:else if tunnelStatus === 'reconnecting'}
+              🔄 Reconnecting...
+            {:else}
+              ⚠️ Down
             {/if}
           </span>
         </div>
+        {#if serverPing > 0}
+          <div class="conn-row">
+            <span class="conn-label">Ping</span>
+            <span class="conn-value mono" style="color: {getPingColor(serverPing)}">
+              {serverPing}ms
+            </span>
+          </div>
+        {/if}
       </div>
     </div>
 

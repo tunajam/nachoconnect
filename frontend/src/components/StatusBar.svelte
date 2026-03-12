@@ -4,6 +4,11 @@
 
 <footer class="status-bar">
   <div class="status-left">
+    {#if status.gamertag}
+      <div class="status-item gamertag">
+        <span>🧀 {status.gamertag}</span>
+      </div>
+    {/if}
     <div class="status-item">
       <span class="dot" class:active={status.xboxDetected}></span>
       <span>Xbox: {status.xboxDetected ? 'Connected' : 'Not found'}</span>
@@ -19,6 +24,14 @@
     {/if}
   </div>
   <div class="status-right">
+    {#if status.serverPing > 0}
+      <span class="mono ping" class:good={status.serverPing < 50} class:ok={status.serverPing >= 50 && status.serverPing < 100} class:bad={status.serverPing >= 100}>
+        {status.serverPing}ms
+      </span>
+    {/if}
+    {#if status.error}
+      <span class="error-indicator">⚠️ {status.error}</span>
+    {/if}
     {#if status.localIP}
       <span class="mono">{status.localIP}</span>
     {/if}
@@ -53,6 +66,11 @@
     gap: 5px;
   }
 
+  .gamertag {
+    color: var(--green);
+    font-weight: 600;
+  }
+
   .dot {
     width: 6px;
     height: 6px;
@@ -63,5 +81,14 @@
   .dot.active {
     background: var(--green);
     box-shadow: 0 0 4px var(--green);
+  }
+
+  .ping.good { color: var(--green); }
+  .ping.ok { color: var(--yellow); }
+  .ping.bad { color: var(--red); }
+
+  .error-indicator {
+    color: var(--red);
+    font-size: 10px;
   }
 </style>

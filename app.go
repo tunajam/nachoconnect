@@ -3,13 +3,14 @@ package main
 import (
 	"context"
 	"fmt"
-	"math/rand"
 	"net"
 	"sync"
 	"time"
 
 	"github.com/tunajam/nachoconnect/internal/l2tunnel"
 	"github.com/tunajam/nachoconnect/internal/lobby"
+	"github.com/tunajam/nachoconnect/internal/perms"
+	"github.com/tunajam/nachoconnect/internal/prefs"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -17,13 +18,18 @@ import (
 type App struct {
 	ctx            context.Context
 	cancel         context.CancelFunc
-	lobbyMgr       *lobby.Manager
+	lobbyClient    *lobby.Client
+	prefs          *prefs.Preferences
 	mu             sync.RWMutex
 	xboxFound      bool
 	xboxMAC        string
 	status         AppStatus
 	tunnel         *l2tunnel.Tunnel
 	discoverCancel context.CancelFunc
+	currentLobby   *lobby.ServerLobby
+	pingTicker     *time.Ticker
+	pingCancel     context.CancelFunc
+	healthCancel   context.CancelFunc
 }
 
 type AppStatus struct {
@@ -35,6 +41,9 @@ type AppStatus struct {
 	LocalIP      string `json:"localIP"`
 	PublicIP     string `json:"publicIP"`
 	Interface    string `json:"interface"`
+	Gamertag     string `json:"gamertag"`
+	ServerPing   int    `json:"serverPing"`
+	Error        string `json:"error,omitempty"`
 }
 
 type LobbyInfo struct {
@@ -47,6 +56,8 @@ type LobbyInfo struct {
 	Ping       int          `json:"ping"`
 	Region     string       `json:"region"`
 	Code       string       `json:"code"`
+	HubAddr    string       `json:"hubAddr"`
+	HubPort    int          `json:"hubPort"`
 	Members    []PlayerInfo `json:"members"`
 }
 
@@ -65,25 +76,55 @@ type NetworkInterface struct {
 	Description string `json:"description,omitempty"`
 }
 
+type PermissionStatus struct {
+	OK      bool   `json:"ok"`
+	Message string `json:"message"`
+}
+
 func NewApp() *App {
+	p, _ := prefs.Load()
 	return &App{
-		lobbyMgr: lobby.NewManager(),
+		lobbyClient: lobby.NewClient(""),
+		prefs:       p,
 	}
 }
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx, a.cancel = context.WithCancel(ctx)
 
-	// Get local IP
+	// Set gamertag in status
+	if a.prefs.Gamertag != "" {
+		a.mu.Lock()
+		a.status.Gamertag = a.prefs.Gamertag
+		a.mu.Unlock()
+	}
+
 	go a.detectLocalIP()
+	go a.measureServerPing()
 }
 
 func (a *App) shutdown(ctx context.Context) {
+	// Graceful lobby leave
+	a.mu.RLock()
+	currentLobby := a.currentLobby
+	gamertag := a.prefs.Gamertag
+	a.mu.RUnlock()
+
+	if currentLobby != nil && gamertag != "" {
+		_ = a.lobbyClient.LeaveLobby(currentLobby.ID, gamertag)
+	}
+
 	if a.cancel != nil {
 		a.cancel()
 	}
 	if a.discoverCancel != nil {
 		a.discoverCancel()
+	}
+	if a.pingCancel != nil {
+		a.pingCancel()
+	}
+	if a.healthCancel != nil {
+		a.healthCancel()
 	}
 	if a.tunnel != nil {
 		a.tunnel.Stop()
@@ -97,17 +138,46 @@ func (a *App) GetStatus() AppStatus {
 	return a.status
 }
 
+// GetGamertag returns the stored gamertag
+func (a *App) GetGamertag() string {
+	return a.prefs.Gamertag
+}
+
+// SetGamertag saves the user's gamertag
+func (a *App) SetGamertag(tag string) error {
+	if tag == "" {
+		return fmt.Errorf("gamertag cannot be empty")
+	}
+	if err := a.prefs.SetGamertag(tag); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	a.status.Gamertag = tag
+	a.mu.Unlock()
+	runtime.EventsEmit(a.ctx, "status:update", a.GetStatus())
+	return nil
+}
+
+// CheckPermissions checks if pcap permissions are available
+func (a *App) CheckPermissions() PermissionStatus {
+	result := perms.CheckPcapPermissions()
+	return PermissionStatus{OK: result.OK, Message: result.Message}
+}
+
+// RequestPermissions prompts for elevated permissions on macOS
+func (a *App) RequestPermissions() error {
+	return perms.RequestElevatedPermissions(l2tunnel.BinaryPath)
+}
+
 // GetInterfaces returns available network interfaces via l2tunnel list
 func (a *App) GetInterfaces() []NetworkInterface {
 	l2Ifaces, err := l2tunnel.List()
 	if err != nil {
-		// Fallback to Go net interfaces
 		return a.getInterfacesFallback()
 	}
 
 	var result []NetworkInterface
 	for _, iface := range l2Ifaces {
-		// Get IP from Go's net package for this interface
 		ip := ""
 		mac := ""
 		if goIface, err := net.InterfaceByName(iface.Name); err == nil {
@@ -167,14 +237,16 @@ func (a *App) getInterfacesFallback() []NetworkInterface {
 // SelectInterface sets the capture interface and starts Xbox discovery via l2tunnel
 func (a *App) SelectInterface(name string) error {
 	a.mu.Lock()
-	// Stop previous discovery if any
 	if a.discoverCancel != nil {
 		a.discoverCancel()
 	}
 	a.status.Interface = name
 	a.mu.Unlock()
 
-	// Start l2tunnel discover to find Xbox MACs
+	// Save preference
+	a.prefs.Interface = name
+	_ = a.prefs.Save()
+
 	discoverCtx, cancel := context.WithCancel(a.ctx)
 	a.mu.Lock()
 	a.discoverCancel = cancel
@@ -206,7 +278,7 @@ func (a *App) handleDiscoveries(ch <-chan l2tunnel.Discovery) {
 			runtime.EventsEmit(a.ctx, "xbox:detected", d.SrcMAC)
 		}
 		a.mu.Unlock()
-		runtime.EventsEmit(a.ctx, "status:update", a.status)
+		runtime.EventsEmit(a.ctx, "status:update", a.GetStatus())
 	}
 }
 
@@ -215,7 +287,6 @@ func (a *App) StartTunnel(iface, mac, localAddr, localPort, remoteAddr, remotePo
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	// Stop existing tunnel
 	if a.tunnel != nil {
 		a.tunnel.Stop()
 	}
@@ -232,122 +303,236 @@ func (a *App) StartTunnel(iface, mac, localAddr, localPort, remoteAddr, remotePo
 
 	t, err := l2tunnel.StartTunnel(cfg)
 	if err != nil {
+		a.status.Error = fmt.Sprintf("Tunnel failed: %v", err)
+		runtime.EventsEmit(a.ctx, "status:update", a.status)
 		return fmt.Errorf("failed to start tunnel: %w", err)
 	}
 
 	a.tunnel = t
 	a.status.TunnelActive = true
 	a.status.Connected = true
+	a.status.Error = ""
 
 	runtime.EventsEmit(a.ctx, "status:update", a.status)
 	runtime.EventsEmit(a.ctx, "tunnel:connected", nil)
 
-	// Monitor tunnel health
 	go a.monitorTunnel(t)
-
 	return nil
 }
 
 func (a *App) monitorTunnel(t *l2tunnel.Tunnel) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
+	reconnectAttempts := 0
+	maxReconnectAttempts := 3
+
 	for range ticker.C {
 		if !t.IsActive() {
 			a.mu.Lock()
 			a.status.TunnelActive = false
 			a.status.Connected = false
 			a.mu.Unlock()
+
+			// Attempt reconnection
+			if reconnectAttempts < maxReconnectAttempts {
+				reconnectAttempts++
+				a.mu.RLock()
+				currentLobby := a.currentLobby
+				iface := a.status.Interface
+				mac := a.xboxMAC
+				a.mu.RUnlock()
+
+				if currentLobby != nil && iface != "" && mac != "" {
+					runtime.EventsEmit(a.ctx, "tunnel:reconnecting", reconnectAttempts)
+					time.Sleep(time.Duration(reconnectAttempts) * time.Second) // Exponential backoff
+
+					err := a.StartTunnel(iface, mac, "0.0.0.0", "0",
+						currentLobby.HubAddr, fmt.Sprintf("%d", currentLobby.HubPort))
+					if err == nil {
+						reconnectAttempts = 0
+						continue
+					}
+				}
+			}
+
 			runtime.EventsEmit(a.ctx, "tunnel:disconnected", nil)
-			runtime.EventsEmit(a.ctx, "status:update", a.status)
+			a.mu.Lock()
+			a.status.Error = "Tunnel disconnected"
+			a.mu.Unlock()
+			runtime.EventsEmit(a.ctx, "status:update", a.GetStatus())
 			return
 		}
+		reconnectAttempts = 0 // Reset on successful check
 	}
 }
 
-// GetLobbies returns available lobbies
+// GetLobbies returns available lobbies from the remote server
 func (a *App) GetLobbies() []LobbyInfo {
-	lobbies := a.lobbyMgr.ListLobbies()
-	var result []LobbyInfo
-	for _, l := range lobbies {
-		result = append(result, lobbyToInfo(l))
+	serverLobbies, err := a.lobbyClient.ListLobbies()
+	if err != nil {
+		// Emit error event but don't crash
+		runtime.EventsEmit(a.ctx, "error", fmt.Sprintf("Failed to fetch lobbies: %v", err))
+		return nil
 	}
-	if len(result) == 0 {
-		result = a.getDemoLobbies()
+
+	gamertag := a.prefs.Gamertag
+	var result []LobbyInfo
+	for _, sl := range serverLobbies {
+		result = append(result, serverLobbyToInfo(sl, gamertag))
 	}
 	return result
 }
 
-// CreateLobby creates a new lobby
+// CreateLobby creates a new lobby on the remote server
 func (a *App) CreateLobby(name, game string, maxPlayers int) (*LobbyInfo, error) {
-	l, err := a.lobbyMgr.CreateLobby(name, game, maxPlayers, "NachoPlayer")
+	gamertag := a.prefs.Gamertag
+	if gamertag == "" {
+		gamertag = "NachoPlayer"
+	}
+
+	sl, err := a.lobbyClient.CreateLobby(name, game, gamertag, maxPlayers)
 	if err != nil {
 		return nil, err
 	}
-	info := lobbyToInfo(l)
+
+	a.mu.Lock()
+	a.currentLobby = sl
+	a.mu.Unlock()
+
+	// Start auto-tunnel if we have Xbox MAC and interface
+	a.autoTunnel(sl)
+
+	// Start ping measurement loop
+	a.startPingLoop(sl)
+
+	info := serverLobbyToInfo(*sl, gamertag)
 	return &info, nil
 }
 
 // JoinLobby joins a lobby by code and starts the tunnel to the hub
 func (a *App) JoinLobby(code string) (*LobbyInfo, error) {
-	l, err := a.lobbyMgr.JoinLobby(code, "NachoPlayer")
+	gamertag := a.prefs.Gamertag
+	if gamertag == "" {
+		gamertag = "NachoPlayer"
+	}
+
+	sl, err := a.lobbyClient.JoinLobby(code, gamertag)
 	if err != nil {
 		return nil, err
 	}
 
-	// Start l2tunnel to hub server when we have Xbox MAC and interface
+	a.mu.Lock()
+	a.currentLobby = sl
+	a.mu.Unlock()
+
+	// Auto-tunnel to hub
+	a.autoTunnel(sl)
+
+	// Start ping measurement loop
+	a.startPingLoop(sl)
+
+	info := serverLobbyToInfo(*sl, gamertag)
+	return &info, nil
+}
+
+// autoTunnel starts l2tunnel to the hub server for the given lobby
+func (a *App) autoTunnel(sl *lobby.ServerLobby) {
 	a.mu.RLock()
 	iface := a.status.Interface
 	mac := a.xboxMAC
 	a.mu.RUnlock()
 
-	if iface != "" && mac != "" {
-		// TODO: Get hub address from lobby server
-		go func() {
-			a.StartTunnel(iface, mac, "0.0.0.0", "1337", "hub.nachoconnect.net", "1337")
-		}()
+	if iface == "" || mac == "" {
+		runtime.EventsEmit(a.ctx, "tunnel:skipped", "No Xbox detected or interface not selected")
+		return
 	}
 
-	info := lobbyToInfo(l)
-	return &info, nil
+	if sl.HubAddr == "" || sl.HubPort == 0 {
+		runtime.EventsEmit(a.ctx, "tunnel:skipped", "No hub relay address for this lobby")
+		return
+	}
+
+	go func() {
+		err := a.StartTunnel(iface, mac, "0.0.0.0", "0",
+			sl.HubAddr, fmt.Sprintf("%d", sl.HubPort))
+		if err != nil {
+			runtime.EventsEmit(a.ctx, "error", fmt.Sprintf("Failed to connect tunnel: %v", err))
+		}
+	}()
 }
 
 // LeaveLobby leaves the current lobby
 func (a *App) LeaveLobby(id string) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	gamertag := a.prefs.Gamertag
+	if gamertag == "" {
+		gamertag = "NachoPlayer"
+	}
 
-	a.lobbyMgr.LeaveLobby(id, "NachoPlayer")
+	// Stop ping loop
+	if a.pingCancel != nil {
+		a.pingCancel()
+	}
+
+	// Leave on server
+	_ = a.lobbyClient.LeaveLobby(id, gamertag)
+
+	a.mu.Lock()
+	a.currentLobby = nil
 	a.status.Connected = false
 	a.status.TunnelActive = false
 	a.status.PeerCount = 0
+	a.status.Error = ""
 
 	if a.tunnel != nil {
 		a.tunnel.Stop()
 		a.tunnel = nil
 	}
+	a.mu.Unlock()
 
-	runtime.EventsEmit(a.ctx, "status:update", a.status)
+	runtime.EventsEmit(a.ctx, "status:update", a.GetStatus())
 	return nil
 }
 
-// GetLobby returns info about a specific lobby
+// GetLobby returns info about a specific lobby (refreshed from server)
 func (a *App) GetLobby(id string) *LobbyInfo {
-	l := a.lobbyMgr.GetLobby(id)
-	if l == nil {
+	sl, err := a.lobbyClient.GetLobby(id)
+	if err != nil {
 		return nil
 	}
-	info := lobbyToInfo(l)
+	info := serverLobbyToInfo(*sl, a.prefs.Gamertag)
 	return &info
+}
+
+// RefreshLobby refreshes the current lobby data from the server
+func (a *App) RefreshLobby() *LobbyInfo {
+	a.mu.RLock()
+	current := a.currentLobby
+	a.mu.RUnlock()
+	if current == nil {
+		return nil
+	}
+	return a.GetLobby(current.ID)
 }
 
 // SendChat sends a chat message to the current lobby
 func (a *App) SendChat(lobbyID, message string) error {
+	gamertag := a.prefs.Gamertag
+	if gamertag == "" {
+		gamertag = "You"
+	}
 	runtime.EventsEmit(a.ctx, "chat:message", map[string]string{
-		"sender":  "You",
+		"sender":  gamertag,
 		"message": message,
 		"time":    time.Now().Format("15:04"),
 	})
 	return nil
+}
+
+// GetServerPing returns the current measured ping to the server
+func (a *App) GetServerPing() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.status.ServerPing
 }
 
 // Internal methods
@@ -364,60 +549,102 @@ func (a *App) detectLocalIP() {
 	a.mu.Unlock()
 }
 
-func lobbyToInfo(l *lobby.Lobby) LobbyInfo {
+func (a *App) measureServerPing() {
+	// Measure periodically
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	// First measurement immediately
+	a.doMeasurePing()
+
+	for range ticker.C {
+		a.doMeasurePing()
+	}
+}
+
+func (a *App) doMeasurePing() {
+	d, err := a.lobbyClient.Ping()
+	if err != nil {
+		return
+	}
+	pingMs := int(d.Milliseconds())
+	a.mu.Lock()
+	a.status.ServerPing = pingMs
+	a.mu.Unlock()
+	runtime.EventsEmit(a.ctx, "ping:update", pingMs)
+}
+
+func (a *App) startPingLoop(sl *lobby.ServerLobby) {
+	if a.pingCancel != nil {
+		a.pingCancel()
+	}
+
+	ctx, cancel := context.WithCancel(a.ctx)
+	a.pingCancel = cancel
+
+	gamertag := a.prefs.Gamertag
+	if gamertag == "" {
+		gamertag = "NachoPlayer"
+	}
+
+	go func() {
+		ticker := time.NewTicker(7 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				// Measure ping
+				d, err := a.lobbyClient.Ping()
+				if err != nil {
+					a.mu.Lock()
+					a.status.Error = "Server unreachable"
+					a.mu.Unlock()
+					runtime.EventsEmit(a.ctx, "error", "Lost connection to lobby server")
+					continue
+				}
+
+				pingMs := int(d.Milliseconds())
+				a.mu.Lock()
+				a.status.ServerPing = pingMs
+				a.status.Error = ""
+				a.mu.Unlock()
+
+				// Update ping on server
+				_ = a.lobbyClient.UpdatePing(sl.ID, gamertag, pingMs)
+
+				// Refresh lobby data to get other players' pings
+				runtime.EventsEmit(a.ctx, "ping:update", pingMs)
+			}
+		}
+	}()
+}
+
+func serverLobbyToInfo(sl lobby.ServerLobby, myGamertag string) LobbyInfo {
 	var members []PlayerInfo
-	for _, m := range l.Members {
+	for _, p := range sl.Players {
 		members = append(members, PlayerInfo{
-			Name:      m.Name,
-			Ping:      m.Ping,
-			IsHost:    m.IsHost,
-			IsYou:     m.IsYou,
+			Name:      p.Name,
+			Ping:      p.Ping,
+			IsHost:    p.IsHost,
+			IsYou:     p.Name == myGamertag,
 			Connected: true,
 		})
 	}
 	return LobbyInfo{
-		ID:         l.ID,
-		Name:       l.Name,
-		Game:       l.Game,
-		Host:       l.Host,
-		Players:    len(l.Members),
-		MaxPlayers: l.MaxPlayers,
-		Ping:       l.Ping,
-		Region:     l.Region,
-		Code:       l.Code,
+		ID:         sl.ID,
+		Name:       sl.Name,
+		Game:       sl.Game,
+		Host:       sl.Host,
+		Players:    len(sl.Players),
+		MaxPlayers: sl.MaxPlayers,
+		Ping:       0, // Will be set by client-side ping measurement
+		Region:     sl.Region,
+		Code:       sl.Code,
+		HubAddr:    sl.HubAddr,
+		HubPort:    sl.HubPort,
 		Members:    members,
 	}
-}
-
-func (a *App) getDemoLobbies() []LobbyInfo {
-	games := []struct {
-		name, game, host, region string
-		players, max, ping      int
-	}{
-		{"Friday Fragfest", "Halo 2", "SpartanChief", "NA-East", 4, 8, 32},
-		{"Sky Pirates", "Crimson Skies", "AcePilot99", "EU-West", 2, 4, 45},
-		{"Mech Madness", "MechAssault", "MechWarrior", "NA-West", 3, 4, 78},
-		{"LAN Party", "Halo: CE", "RetroGamer42", "NA-East", 6, 16, 21},
-		{"Spies vs Mercs", "Splinter Cell: CT", "ShadowAgent", "NA-East", 2, 8, 38},
-	}
-
-	var lobbies []LobbyInfo
-	for i, g := range games {
-		code := fmt.Sprintf("NACHO-%04d", rand.Intn(10000))
-		lobbies = append(lobbies, LobbyInfo{
-			ID:         fmt.Sprintf("demo-%d", i),
-			Name:       g.name,
-			Game:       g.game,
-			Host:       g.host,
-			Players:    g.players,
-			MaxPlayers: g.max,
-			Ping:       g.ping,
-			Region:     g.region,
-			Code:       code,
-			Members: []PlayerInfo{
-				{Name: g.host, Ping: g.ping, IsHost: true},
-			},
-		})
-	}
-	return lobbies
 }

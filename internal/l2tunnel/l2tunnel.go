@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 )
@@ -44,8 +46,31 @@ type Tunnel struct {
 	err    error
 }
 
-// BinaryPath is the path to the l2tunnel binary. Set during init.
+// BinaryPath is the path to the l2tunnel binary. Resolved at init.
 var BinaryPath = "lib/l2tunnel/l2tunnel"
+
+func init() {
+	// Try to find l2tunnel relative to the executable (for app bundles)
+	exe, err := os.Executable()
+	if err == nil {
+		dir := filepath.Dir(exe)
+
+		// macOS app bundle: nachoconnect.app/Contents/MacOS/nachoconnect
+		// l2tunnel at: nachoconnect.app/Contents/Resources/l2tunnel
+		macOSPath := filepath.Join(dir, "..", "Resources", "l2tunnel")
+		if _, err := os.Stat(macOSPath); err == nil {
+			BinaryPath = macOSPath
+			return
+		}
+
+		// Same directory as executable
+		sameDirPath := filepath.Join(dir, "l2tunnel")
+		if _, err := os.Stat(sameDirPath); err == nil {
+			BinaryPath = sameDirPath
+			return
+		}
+	}
+}
 
 // List returns available network interfaces by running `l2tunnel list`
 func List() ([]Interface, error) {
