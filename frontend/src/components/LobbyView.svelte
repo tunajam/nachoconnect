@@ -7,26 +7,43 @@
 
   let copied = false;
   let players = lobby?.members || [];
-  let tunnelStatus = 'connecting'; // connecting | connected | disconnected | reconnecting
+  let tunnelStatus = 'connecting'; // connecting | establishing | connected | disconnected | reconnecting | failed
   let refreshInterval;
   let serverPing = 0;
+  let tunnelError = '';
+  let reconnectAttempt = 0;
+  let showDisconnectBanner = false;
 
   onMount(() => {
     // Refresh lobby data periodically to get updated player list / pings
     refreshInterval = setInterval(refreshLobby, 5000);
 
+    // Show "establishing" after a brief connecting phase
+    setTimeout(() => {
+      if (tunnelStatus === 'connecting') {
+        tunnelStatus = 'establishing';
+      }
+    }, 1500);
+
     if (window.runtime) {
       window.runtime.EventsOn('tunnel:connected', () => {
         tunnelStatus = 'connected';
+        tunnelError = '';
+        showDisconnectBanner = false;
+        reconnectAttempt = 0;
       });
       window.runtime.EventsOn('tunnel:disconnected', () => {
         tunnelStatus = 'disconnected';
+        showDisconnectBanner = true;
+        tunnelError = 'Failed to connect to host. They may need to check their port forwarding.';
       });
       window.runtime.EventsOn('tunnel:reconnecting', (attempt) => {
         tunnelStatus = 'reconnecting';
+        reconnectAttempt = attempt;
+        showDisconnectBanner = true;
       });
       window.runtime.EventsOn('tunnel:skipped', (reason) => {
-        tunnelStatus = 'connected'; // Show as connected even without tunnel (for browsing)
+        tunnelStatus = 'connected';
       });
       window.runtime.EventsOn('ping:update', (ping) => {
         serverPing = ping;
@@ -81,6 +98,22 @@
     dispatch('leave');
   }
 
+  async function retryTunnel() {
+    tunnelStatus = 'connecting';
+    tunnelError = '';
+    showDisconnectBanner = false;
+    try {
+      // Re-join triggers tunnel reconnection on the Go side
+      if (lobby?.code) {
+        await window.go.main.App.JoinLobby(lobby.code);
+      }
+    } catch (e) {
+      tunnelStatus = 'failed';
+      tunnelError = 'Failed to connect to host. They may need to check their port forwarding.';
+      showDisconnectBanner = true;
+    }
+  }
+
   function getPingColor(ping) {
     if (ping === 0) return 'var(--text-muted)';
     if (ping < 50) return 'var(--green)';
@@ -106,6 +139,34 @@
       </button>
     </div>
   </div>
+
+  {#if showDisconnectBanner}
+    <div class="disconnect-banner">
+      <div class="disconnect-content">
+        {#if tunnelStatus === 'reconnecting'}
+          <span>🔄 Connection lost — reconnecting (attempt {reconnectAttempt})...</span>
+        {:else if tunnelStatus === 'disconnected' || tunnelStatus === 'failed'}
+          <span>❌ {tunnelError || 'Tunnel disconnected'}</span>
+          <button class="btn btn-retry" on:click={retryTunnel}>Retry</button>
+        {/if}
+      </div>
+      <button class="disconnect-close" on:click={() => showDisconnectBanner = false}>✕</button>
+    </div>
+  {/if}
+
+  {#if tunnelStatus === 'connecting' || tunnelStatus === 'establishing'}
+    <div class="tunnel-progress">
+      {#if tunnelStatus === 'connecting'}
+        <span>🔌 Connecting to host...</span>
+      {:else}
+        <span>🔧 Establishing tunnel...</span>
+      {/if}
+    </div>
+  {:else if tunnelStatus === 'connected' && !showDisconnectBanner}
+    <div class="tunnel-success">
+      <span>✅ Connected! Your Xboxes should see each other now.</span>
+    </div>
+  {/if}
 
   <div class="lobby-body">
     <div class="panel players-panel">
@@ -399,5 +460,68 @@
   .btn-leave:hover {
     background: var(--red-dim);
     color: var(--text-primary);
+  }
+
+  .tunnel-progress, .tunnel-success {
+    padding: 8px 16px;
+    font-size: 13px;
+    margin-bottom: 12px;
+  }
+
+  .tunnel-progress {
+    background: rgba(234, 179, 8, 0.1);
+    border: 1px solid rgba(234, 179, 8, 0.3);
+    color: var(--yellow, #eab308);
+  }
+
+  .tunnel-success {
+    background: rgba(16, 185, 129, 0.1);
+    border: 1px solid rgba(16, 185, 129, 0.3);
+    color: var(--green);
+  }
+
+  .disconnect-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    background: rgba(239, 68, 68, 0.15);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    color: #ef4444;
+    font-size: 13px;
+    margin-bottom: 12px;
+  }
+
+  .disconnect-content {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .btn-retry {
+    padding: 4px 12px;
+    background: rgba(239, 68, 68, 0.2);
+    color: #ef4444;
+    border: 1px solid rgba(239, 68, 68, 0.4);
+    font-size: 12px;
+    cursor: pointer;
+  }
+
+  .btn-retry:hover {
+    background: rgba(239, 68, 68, 0.3);
+  }
+
+  .disconnect-close {
+    background: none;
+    color: #ef4444;
+    border: none;
+    padding: 2px 6px;
+    font-size: 14px;
+    opacity: 0.7;
+    cursor: pointer;
+  }
+
+  .disconnect-close:hover {
+    opacity: 1;
   }
 </style>

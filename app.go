@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+	goruntime "runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -204,6 +206,49 @@ func (a *App) IsBPFSetupDone() bool {
 	return perms.IsSetupDone()
 }
 
+// friendlyInterfaceName returns a human-readable label for macOS interface names.
+// On non-macOS platforms or if a description from l2tunnel is already available, returns that instead.
+func friendlyInterfaceName(name, l2Description string, goIface *net.Interface) string {
+	// If l2tunnel already provided a non-empty description (common on Windows/Npcap), prefer it
+	if l2Description != "" {
+		return l2Description
+	}
+
+	// Only apply friendly names on macOS
+	if goruntime.GOOS != "darwin" {
+		return ""
+	}
+
+	// Skip known virtual/system interfaces
+	for _, prefix := range []string{"utun", "awdl", "llw"} {
+		if strings.HasPrefix(name, prefix) {
+			return "" // caller should skip these
+		}
+	}
+
+	if name == "bridge0" {
+		return "Thunderbolt Bridge"
+	}
+
+	// en* interfaces — distinguish Wi-Fi vs Ethernet using interface flags
+	if strings.HasPrefix(name, "en") {
+		if goIface != nil && goIface.Flags&net.FlagBroadcast != 0 {
+			// On macOS, en0 is typically Wi-Fi on laptops, but could be Ethernet on desktops.
+			// Wi-Fi interfaces support multicast; we use a heuristic: en0 = Wi-Fi unless MTU suggests otherwise
+			if name == "en0" {
+				// Most Macs: en0 is Wi-Fi. Mac Pro/Mac mini with no Wi-Fi: en0 is Ethernet.
+				// MTU 1500 is standard for both, so check if there's a wireless hint in the name
+				return "Wi-Fi"
+			}
+			// en1-en9: typically Ethernet adapters, USB Ethernet dongles, or Thunderbolt Ethernet
+			return "Ethernet"
+		}
+		return "Ethernet"
+	}
+
+	return ""
+}
+
 // GetInterfaces returns available network interfaces via l2tunnel list
 func (a *App) GetInterfaces() []NetworkInterface {
 	l2Ifaces, err := l2tunnel.List()
@@ -213,9 +258,25 @@ func (a *App) GetInterfaces() []NetworkInterface {
 
 	var result []NetworkInterface
 	for _, iface := range l2Ifaces {
+		// Skip known virtual interfaces on macOS
+		if goruntime.GOOS == "darwin" {
+			skip := false
+			for _, prefix := range []string{"utun", "awdl", "llw"} {
+				if strings.HasPrefix(iface.Name, prefix) {
+					skip = true
+					break
+				}
+			}
+			if skip {
+				continue
+			}
+		}
+
 		ip := ""
 		mac := ""
-		if goIface, err := net.InterfaceByName(iface.Name); err == nil {
+		var goIface *net.Interface
+		if gi, err := net.InterfaceByName(iface.Name); err == nil {
+			goIface = gi
 			// Skip loopback and down interfaces
 			if goIface.Flags&net.FlagLoopback != 0 || goIface.Flags&net.FlagUp == 0 {
 				continue
@@ -237,11 +298,18 @@ func (a *App) GetInterfaces() []NetworkInterface {
 			// Can't resolve interface details — skip
 			continue
 		}
+
+		friendly := friendlyInterfaceName(iface.Name, iface.Description, goIface)
+		desc := friendly
+		if desc == "" {
+			desc = iface.Description
+		}
+
 		result = append(result, NetworkInterface{
 			Name:        iface.Name,
 			IP:          ip,
 			MAC:         mac,
-			Description: iface.Description,
+			Description: desc,
 		})
 	}
 	// Sort: interfaces with an IP first, then by name (Ethernet-like names first)

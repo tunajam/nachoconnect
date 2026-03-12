@@ -9,6 +9,8 @@
   let error = '';
   let scanDots = '';
   let dotInterval;
+  let scanTimeout;
+  let showScanHint = false;
   let gamertag = '';
   let step = 'gamertag'; // gamertag | permissions | interface
   let permissionsOK = true;
@@ -28,6 +30,7 @@
 
   onDestroy(() => {
     clearInterval(dotInterval);
+    clearTimeout(scanTimeout);
   });
 
   async function saveGamertag() {
@@ -76,7 +79,9 @@
       window.runtime.EventsOn('xbox:detected', (mac) => {
         xboxMAC = mac;
         scanning = false;
+        showScanHint = false;
         clearInterval(dotInterval);
+        clearTimeout(scanTimeout);
       });
     }
   }
@@ -87,10 +92,19 @@
     error = '';
     xboxMAC = '';
     scanDots = '';
+    showScanHint = false;
+    clearTimeout(scanTimeout);
     
     dotInterval = setInterval(() => {
       scanDots = scanDots.length >= 3 ? '' : scanDots + '.';
     }, 500);
+
+    // After 30 seconds with no Xbox, show helpful hint (don't stop scanning)
+    scanTimeout = setTimeout(() => {
+      if (scanning && !xboxMAC) {
+        showScanHint = true;
+      }
+    }, 30000);
 
     try {
       await window.go.main.App.SelectInterface(iface.name);
@@ -197,6 +211,13 @@
         {/each}
       </div>
     </div>
+
+    {#if showScanHint && scanning && !xboxMAC}
+      <div class="scan-hint">
+        <p>🤔 <strong>Not finding your Xbox?</strong> Make sure you're on the System Link screen in a game (like Halo 2). Your Xbox only broadcasts when it's looking for games.</p>
+        <button class="btn-secondary" on:click={() => { showScanHint = false; selectInterface(selectedInterface); }}>Retry</button>
+      </div>
+    {/if}
 
     {#if xboxMAC}
       <div class="xbox-found">
@@ -492,4 +513,27 @@
   }
 
   .btn-ghost:hover { color: var(--text-primary); }
+
+  .scan-hint {
+    margin-top: 24px;
+    padding: 16px;
+    border: 1px solid var(--yellow, #eab308);
+    background: rgba(234, 179, 8, 0.08);
+    font-size: 13px;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .scan-hint p {
+    margin: 0;
+    flex: 1;
+    line-height: 1.5;
+  }
+
+  .scan-hint .btn-secondary {
+    flex-shrink: 0;
+    align-self: center;
+  }
 </style>

@@ -10,6 +10,7 @@
   let serverPing = 0;
   let error = '';
   let refreshInterval;
+  let coldStartMessage = '';
 
   const gameIcons = {
     'Halo 2': '🎯',
@@ -50,20 +51,42 @@
     if (refreshInterval) clearInterval(refreshInterval);
   });
 
-  async function fetchLobbies() {
+  async function fetchLobbies(retryCount = 0, maxRetries = 5) {
     try {
-      const result = await window.go.main.App.GetLobbies();
+      const start = Date.now();
+      const resultPromise = window.go.main.App.GetLobbies();
+      
+      // If first load and taking >5s, show cold start message
+      const timeoutId = loading ? setTimeout(() => {
+        coldStartMessage = 'Lobby server is waking up, hang tight...';
+      }, 5000) : null;
+
+      const result = await resultPromise;
+      if (timeoutId) clearTimeout(timeoutId);
+      
       if (result) {
         lobbies = result;
         error = '';
+        coldStartMessage = '';
       } else {
         lobbies = [];
       }
+      loading = false;
     } catch (e) {
+      if (retryCount < maxRetries) {
+        coldStartMessage = 'Lobby server is waking up, hang tight...';
+        setTimeout(() => fetchLobbies(retryCount + 1, maxRetries), 3000);
+        return;
+      }
       error = 'Unable to reach lobby server';
+      coldStartMessage = '';
       lobbies = [];
+      loading = false;
+      // Emit critical error — server unreachable after retries
+      if (window.runtime) {
+        window.runtime.EventsEmit('error:critical', 'Lobby server unreachable after multiple attempts');
+      }
     }
-    loading = false;
   }
 
   function getPingColor(ping) {
@@ -141,7 +164,7 @@
   {#if loading}
     <div class="loading">
       <span class="spinner">🧀</span>
-      <p>Finding lobbies...</p>
+      <p>{coldStartMessage || 'Finding lobbies...'}</p>
     </div>
   {:else if lobbies.length === 0}
     <div class="empty">

@@ -1,5 +1,13 @@
 <script>
   export let status;
+
+  function openReportIssue() {
+    if (window.runtime) {
+      window.runtime.BrowserOpenURL('https://github.com/tunajam/nachoconnect/issues');
+    } else {
+      window.open('https://github.com/tunajam/nachoconnect/issues', '_blank');
+    }
+  }
 </script>
 
 <footer class="status-bar">
@@ -38,6 +46,7 @@
     {#if status.interface}
       <span class="mono">{status.interface}</span>
     {/if}
+    <button class="report-link" on:click={openReportIssue}>🐛 Report Issue</button>
   </div>
 </footer>
 
@@ -90,5 +99,19 @@
   .error-indicator {
     color: var(--red);
     font-size: 10px;
+  }
+
+  .report-link {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 11px;
+    cursor: pointer;
+    padding: 0;
+    font-family: inherit;
+  }
+
+  .report-link:hover {
+    color: var(--text-primary);
   }
 </style>

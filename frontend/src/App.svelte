@@ -24,6 +24,8 @@
   let currentLobby = null;
   let errorMessage = '';
   let showError = false;
+  let errorCritical = false;
+  let errorTimeout;
 
   onMount(async () => {
     try {
@@ -54,19 +56,26 @@
       window.runtime.EventsOn('error', (msg) => {
         showErrorBanner(msg);
       });
+      window.runtime.EventsOn('error:critical', (msg) => {
+        showErrorBanner(msg, true);
+      });
       window.runtime.EventsOn('tunnel:reconnecting', (attempt) => {
-        showErrorBanner(`Tunnel dropped — reconnecting (attempt ${attempt})...`);
+        showErrorBanner(`Tunnel dropped — reconnecting (attempt ${attempt})...`, true);
       });
       window.runtime.EventsOn('tunnel:disconnected', () => {
-        showErrorBanner('Tunnel disconnected');
+        showErrorBanner('Tunnel disconnected', true);
       });
     }
   });
 
-  function showErrorBanner(msg) {
+  function showErrorBanner(msg, critical = false) {
     errorMessage = msg;
     showError = true;
-    setTimeout(() => { showError = false; }, 8000);
+    errorCritical = critical;
+    if (errorTimeout) clearTimeout(errorTimeout);
+    if (!critical) {
+      errorTimeout = setTimeout(() => { showError = false; }, 8000);
+    }
   }
 
   function setupComplete(event) {
