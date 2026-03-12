@@ -57,14 +57,72 @@ func checkMacOS() CheckResult {
 }
 
 func checkWindows() CheckResult {
-	out, err := exec.Command("sc", "query", "npcap").CombinedOutput()
-	if err != nil || !strings.Contains(string(out), "RUNNING") {
+	if IsNpcapInstalled() {
+		return CheckResult{OK: true, Message: "Npcap detected"}
+	}
+
+	// Try to auto-install from bundled npcap-installer.exe
+	installerPath := findNpcapInstaller()
+	if installerPath != "" {
 		return CheckResult{
 			OK:      false,
-			Message: "Npcap is required for packet capture on Windows. Please install it from npcap.com",
+			Message: "Npcap is required. NachoConnect will install it now.",
 		}
 	}
-	return CheckResult{OK: true, Message: "Npcap detected"}
+
+	return CheckResult{
+		OK:      false,
+		Message: "Npcap is required for packet capture. Download it from npcap.com",
+	}
+}
+
+// InstallNpcap runs the bundled Npcap installer silently.
+// Returns nil if installation succeeds.
+func InstallNpcap() error {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+
+	installerPath := findNpcapInstaller()
+	if installerPath == "" {
+		return fmt.Errorf("npcap-installer.exe not found — download from npcap.com")
+	}
+
+	// Run Npcap installer in silent mode with WinPcap compatibility
+	cmd := exec.Command(installerPath, "/S", "/winpcap_mode=yes")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("npcap install failed: %w\nOutput: %s", err, string(out))
+	}
+
+	// Verify it's now running
+	if !IsNpcapInstalled() {
+		return fmt.Errorf("npcap installed but service not running — try rebooting")
+	}
+
+	return nil
+}
+
+// findNpcapInstaller looks for npcap-installer.exe near the executable
+func findNpcapInstaller() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	dir := filepath.Dir(exe)
+
+	// Check same directory as executable
+	candidates := []string{
+		filepath.Join(dir, "npcap-installer.exe"),
+		filepath.Join(dir, "redist", "npcap-installer.exe"),
+	}
+
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
 }
 
 // IsSetupDone checks if BPF permissions have already been installed

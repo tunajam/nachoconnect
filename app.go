@@ -187,10 +187,15 @@ func (a *App) CheckPermissions() PermissionStatus {
 	return PermissionStatus{OK: result.OK, Message: result.Message}
 }
 
-// RequestPermissions installs BPF permissions permanently (ChmodBPF approach).
-// Creates access_bpf group, adds user, installs LaunchDaemon for boot persistence.
-// Prompts for admin password once — never needs to ask again.
+// RequestPermissions installs permissions for packet capture.
+// macOS: Creates access_bpf group, adds user, installs LaunchDaemon. Prompts for admin password once.
+// Windows: Runs bundled Npcap installer silently.
 func (a *App) RequestPermissions() error {
+	if !perms.IsNpcapInstalled() {
+		if err := perms.InstallNpcap(); err != nil {
+			return err
+		}
+	}
 	return perms.RequestElevatedPermissions(l2tunnel.BinaryPath)
 }
 
