@@ -45,7 +45,24 @@ Xbox ←→ [Packet Capture (gopacket)] ←→ [Noise Tunnel (UDP)] ←→ [Peer
                                       [STUN/Relay Server]
 ```
 
-## Building
+## Installation
+
+### Windows
+1. Download `NachoConnect-Setup-0.1.0.exe` from [Releases](https://github.com/tunajam/nachoconnect/releases)
+2. Run the installer — it bundles everything including the Npcap driver
+3. Launch NachoConnect from Start Menu or Desktop
+4. Plug in your Xbox and play!
+
+> The installer requires admin privileges to install the Npcap packet capture driver.
+
+### macOS
+1. Download `NachoConnect-0.1.0.dmg` from [Releases](https://github.com/tunajam/nachoconnect/releases)
+2. Open the DMG and drag NachoConnect to Applications
+3. Launch and allow network permissions when prompted
+
+> macOS uses the built-in libpcap — no extra drivers needed.
+
+## Building from Source
 
 ### Prerequisites
 - Go 1.21+
@@ -53,14 +70,24 @@ Xbox ←→ [Packet Capture (gopacket)] ←→ [Noise Tunnel (UDP)] ←→ [Peer
 - Wails CLI: `go install github.com/wailsapp/wails/v2/cmd/wails@latest`
 - libpcap (macOS: built-in, Linux: `apt install libpcap-dev`, Windows: Npcap)
 
-### Build
-```bash
-wails build
-```
-
 ### Dev Mode
 ```bash
 wails dev
+```
+
+### Build Windows Installer
+```powershell
+# On Windows — requires NSIS (choco install nsis)
+# Place npcap installer at build/bin/npcap-installer.exe (from https://npcap.com)
+.\scripts\build-installer.ps1
+# Output: dist/NachoConnect-Setup-0.1.0.exe
+```
+
+### Build macOS DMG
+```bash
+# On macOS — optional: brew install create-dmg
+bash scripts/build-macos.sh
+# Output: dist/NachoConnect-0.1.0.dmg
 ```
 
 ### Server
