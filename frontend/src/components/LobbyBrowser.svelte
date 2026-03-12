@@ -7,7 +7,7 @@
   let lobbies = [];
   let joinCode = '';
   let loading = true;
-  let serverPing = 0;
+  // Server ping removed — meaningless pre-join. P2P ping shown after joining.
   let error = '';
   let refreshInterval;
   let coldStartMessage = '';
@@ -40,11 +40,7 @@
     // Refresh lobbies every 10 seconds
     refreshInterval = setInterval(fetchLobbies, 10000);
 
-    if (window.runtime) {
-      window.runtime.EventsOn('ping:update', (ping) => {
-        serverPing = ping;
-      });
-    }
+    // No ping listener needed — P2P ping only relevant after joining
   });
 
   onDestroy(() => {
@@ -135,11 +131,7 @@
     <div class="browser-title">
       <h2>🎮 Active Lobbies</h2>
       <span class="count">{lobbies.length} room{lobbies.length !== 1 ? 's' : ''}</span>
-      {#if serverPing > 0}
-        <span class="server-ping mono" style="color: {getPingColor(serverPing)}">
-          {serverPing}ms to server
-        </span>
-      {/if}
+      <span class="p2p-badge">⚡ Direct P2P</span>
     </div>
     <div class="browser-actions">
       <div class="join-code">
@@ -197,9 +189,8 @@
               <span class="player-count">{lobby.players}/{lobby.maxPlayers}</span>
               <span class="player-label">players</span>
             </div>
-            <div class="ping" style="color: {getPingColor(serverPing)}">
-              <span class="ping-dot">{getPingDot(serverPing)}</span>
-              <span class="ping-value mono">{serverPing > 0 ? serverPing + 'ms' : '--'}</span>
+            <div class="p2p-indicator">
+              <span class="mode-badge">⚡ P2P</span>
             </div>
             <div class="region mono">{lobby.region}</div>
           </div>
@@ -241,8 +232,16 @@
     color: var(--text-muted);
   }
 
-  .server-ping {
+  .p2p-badge {
     font-size: 11px;
+    color: var(--green);
+    font-weight: 600;
+  }
+
+  .p2p-indicator {
+    display: flex;
+    align-items: center;
+    min-width: 65px;
   }
 
   .browser-actions {

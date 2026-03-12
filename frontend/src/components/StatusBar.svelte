@@ -32,7 +32,11 @@
     {/if}
   </div>
   <div class="status-right">
-    {#if status.serverPing > 0}
+    {#if status.peerPing > 0}
+      <span class="mono ping" class:good={status.peerPing < 50} class:ok={status.peerPing >= 50 && status.peerPing < 100} class:bad={status.peerPing >= 100}>
+        ⚡ {status.peerPing}ms P2P
+      </span>
+    {:else if status.serverPing > 0}
       <span class="mono ping" class:good={status.serverPing < 50} class:ok={status.serverPing >= 50 && status.serverPing < 100} class:bad={status.serverPing >= 100}>
         {status.serverPing}ms
       </span>

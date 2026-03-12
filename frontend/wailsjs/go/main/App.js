@@ -30,6 +30,10 @@ export function GetLobby(arg1) {
   return window['go']['main']['App']['GetLobby'](arg1);
 }
 
+export function GetPeerPings() {
+  return window['go']['main']['App']['GetPeerPings']();
+}
+
 export function GetPortForwardInfo(arg1) {
   return window['go']['main']['App']['GetPortForwardInfo'](arg1);
 }

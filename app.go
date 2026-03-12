@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"net"
 	goruntime "runtime"
@@ -34,6 +35,8 @@ type App struct {
 	pingTicker     *time.Ticker
 	pingCancel     context.CancelFunc
 	healthCancel   context.CancelFunc
+	peerPings      map[string]int // addr string → RTT ms (host-side per-peer pings)
+	pingConn       *net.UDPConn   // peer-side UDP socket for ping
 }
 
 type AppStatus struct {
@@ -47,6 +50,7 @@ type AppStatus struct {
 	Interface    string `json:"interface"`
 	Gamertag     string `json:"gamertag"`
 	ServerPing   int    `json:"serverPing"`
+	PeerPing     int    `json:"peerPing"`
 	Error        string `json:"error,omitempty"`
 }
 
@@ -68,6 +72,7 @@ type LobbyInfo struct {
 type PlayerInfo struct {
 	Name      string `json:"name"`
 	Ping      int    `json:"ping"`
+	P2PPing   int    `json:"p2pPing"`
 	IsHost    bool   `json:"isHost"`
 	IsYou     bool   `json:"isYou"`
 	Connected bool   `json:"connected"`
@@ -112,7 +117,7 @@ func (a *App) startup(ctx context.Context) {
 	}
 
 	go a.detectLocalIP()
-	go a.measureServerPing()
+	// Server ping disabled — replaced by P2P ping when in a lobby
 }
 
 func (a *App) shutdown(ctx context.Context) {
@@ -761,6 +766,8 @@ func (a *App) LeaveLobby(id string) error {
 
 	a.mu.Lock()
 	a.currentLobby = nil
+	a.peerPings = nil
+	a.status.PeerPing = 0
 	a.status.Connected = false
 	a.status.TunnelActive = false
 	a.status.PeerCount = 0
@@ -870,29 +877,6 @@ func (a *App) detectGateway() string {
 	return ""
 }
 
-func (a *App) measureServerPing() {
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-
-	a.doMeasurePing()
-
-	for range ticker.C {
-		a.doMeasurePing()
-	}
-}
-
-func (a *App) doMeasurePing() {
-	d, err := a.lobbyClient.Ping()
-	if err != nil {
-		return
-	}
-	pingMs := int(d.Milliseconds())
-	a.mu.Lock()
-	a.status.ServerPing = pingMs
-	a.mu.Unlock()
-	runtime.EventsEmit(a.ctx, "ping:update", pingMs)
-}
-
 func (a *App) startPingLoop(sl *lobby.ServerLobby) {
 	if a.pingCancel != nil {
 		a.pingCancel()
@@ -906,35 +890,144 @@ func (a *App) startPingLoop(sl *lobby.ServerLobby) {
 		gamertag = "NachoPlayer"
 	}
 
-	go func() {
-		ticker := time.NewTicker(7 * time.Second)
-		defer ticker.Stop()
+	a.mu.RLock()
+	isHost := a.hub != nil
+	a.mu.RUnlock()
 
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				d, err := a.lobbyClient.Ping()
-				if err != nil {
-					a.mu.Lock()
-					a.status.Error = "Server unreachable"
-					a.mu.Unlock()
-					runtime.EventsEmit(a.ctx, "error", "Lost connection to lobby server")
-					continue
-				}
+	if isHost {
+		go a.pingLoopHost(ctx, sl, gamertag)
+	} else {
+		go a.pingLoopPeer(ctx, sl, gamertag)
+	}
+}
 
-				pingMs := int(d.Milliseconds())
-				a.mu.Lock()
-				a.status.ServerPing = pingMs
-				a.status.Error = ""
-				a.mu.Unlock()
+// pingLoopHost — host pings all connected peers via the hub
+func (a *App) pingLoopHost(ctx context.Context, sl *lobby.ServerLobby, gamertag string) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
 
-				_ = a.lobbyClient.UpdatePing(sl.ID, gamertag, pingMs)
-				runtime.EventsEmit(a.ctx, "ping:update", pingMs)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.mu.RLock()
+			hub := a.hub
+			a.mu.RUnlock()
+			if hub == nil {
+				continue
 			}
+
+			results := hub.PingAllPeers(2 * time.Second)
+
+			a.mu.Lock()
+			a.peerPings = results
+			// Host's own ping is ~0
+			a.status.PeerPing = 0
+			a.status.ServerPing = 0
+			a.mu.Unlock()
+
+			// Emit per-peer pings for UI
+			runtime.EventsEmit(a.ctx, "ping:p2p", map[string]interface{}{
+				"self":  0,
+				"peers": results,
+			})
+
+			// Update lobby server with our ping (0 for host)
+			_ = a.lobbyClient.UpdatePing(sl.ID, gamertag, 0)
 		}
+	}
+}
+
+// pingLoopPeer — peer sends UDP pings to the host and measures RTT
+func (a *App) pingLoopPeer(ctx context.Context, sl *lobby.ServerLobby, gamertag string) {
+	if sl.HostPublicIP == "" || sl.HostPort <= 0 {
+		return
+	}
+
+	hostAddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", sl.HostPublicIP, sl.HostPort))
+	if err != nil {
+		return
+	}
+
+	conn, err := net.ListenUDP("udp4", nil)
+	if err != nil {
+		return
+	}
+	a.mu.Lock()
+	a.pingConn = conn
+	a.mu.Unlock()
+
+	defer func() {
+		conn.Close()
+		a.mu.Lock()
+		a.pingConn = nil
+		a.mu.Unlock()
 	}()
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			pkt := l2tunnel.BuildPingPacket()
+			sendTime := time.Now()
+			_, err := conn.WriteToUDP(pkt, hostAddr)
+			if err != nil {
+				continue
+			}
+
+			// Wait for pong
+			buf := make([]byte, 13)
+			conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+			n, _, err := conn.ReadFromUDP(buf)
+			if err != nil {
+				continue
+			}
+
+			ts := l2tunnel.ParsePongTimestamp(buf, n)
+			if ts == 0 {
+				continue
+			}
+
+			// Verify timestamp matches what we sent
+			sentTs := int64(binary.BigEndian.Uint64(pkt[5:13]))
+			if ts != sentTs {
+				continue
+			}
+
+			rtt := int(time.Since(sendTime).Milliseconds())
+
+			a.mu.Lock()
+			a.status.PeerPing = rtt
+			a.status.ServerPing = rtt // Keep ServerPing updated for backward compat
+			a.mu.Unlock()
+
+			runtime.EventsEmit(a.ctx, "ping:p2p", map[string]interface{}{
+				"self": rtt,
+			})
+			runtime.EventsEmit(a.ctx, "ping:update", rtt)
+
+			_ = a.lobbyClient.UpdatePing(sl.ID, gamertag, rtt)
+		}
+	}
+}
+
+// GetPeerPings returns the host's measured RTT to each peer (host-only).
+func (a *App) GetPeerPings() map[string]int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.peerPings == nil {
+		return map[string]int{}
+	}
+	result := make(map[string]int, len(a.peerPings))
+	for k, v := range a.peerPings {
+		result[k] = v
+	}
+	return result
 }
 
 func serverLobbyToInfo(sl lobby.ServerLobby, myGamertag string) LobbyInfo {

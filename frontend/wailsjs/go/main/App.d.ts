@@ -16,6 +16,8 @@ export function GetLobbies():Promise<Array<main.LobbyInfo>>;
 
 export function GetLobby(arg1:string):Promise<main.LobbyInfo>;
 
+export function GetPeerPings():Promise<Record<string, number>>;
+
 export function GetPortForwardInfo(arg1:number):Promise<main.PortForwardInfo>;
 
 export function GetServerPing():Promise<number>;

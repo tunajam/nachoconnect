@@ -11,6 +11,7 @@ export namespace main {
 	    interface: string;
 	    gamertag: string;
 	    serverPing: number;
+	    peerPing: number;
 	    error?: string;
 	
 	    static createFrom(source: any = {}) {
@@ -29,12 +30,14 @@ export namespace main {
 	        this.interface = source["interface"];
 	        this.gamertag = source["gamertag"];
 	        this.serverPing = source["serverPing"];
+	        this.peerPing = source["peerPing"];
 	        this.error = source["error"];
 	    }
 	}
 	export class PlayerInfo {
 	    name: string;
 	    ping: number;
+	    p2pPing: number;
 	    isHost: boolean;
 	    isYou: boolean;
 	    connected: boolean;
@@ -47,6 +50,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
 	        this.ping = source["ping"];
+	        this.p2pPing = source["p2pPing"];
 	        this.isHost = source["isHost"];
 	        this.isYou = source["isYou"];
 	        this.connected = source["connected"];

@@ -9,7 +9,8 @@
   let players = lobby?.members || [];
   let tunnelStatus = 'connecting'; // connecting | establishing | connected | disconnected | reconnecting | failed
   let refreshInterval;
-  let serverPing = 0;
+  let p2pPing = 0;
+  let peerPings = {};
   let tunnelError = '';
   let reconnectAttempt = 0;
   let showDisconnectBanner = false;
@@ -45,8 +46,12 @@
       window.runtime.EventsOn('tunnel:skipped', (reason) => {
         tunnelStatus = 'connected';
       });
+      window.runtime.EventsOn('ping:p2p', (data) => {
+        if (data.self !== undefined) p2pPing = data.self;
+        if (data.peers) peerPings = data.peers;
+      });
       window.runtime.EventsOn('ping:update', (ping) => {
-        serverPing = ping;
+        p2pPing = ping;
       });
     }
 
@@ -185,9 +190,11 @@
                 <span class="you-badge">you</span>
               {/if}
             </div>
-            <span class="player-ping mono" style="color: {getPingColor(player.isYou ? serverPing : player.ping)}">
-              {#if player.isYou}
-                {serverPing > 0 ? serverPing + 'ms' : '--'}
+            <span class="player-ping mono" style="color: {getPingColor(player.isYou ? p2pPing : player.ping)}">
+              {#if player.isHost && !player.isYou}
+                {p2pPing > 0 ? p2pPing + 'ms' : '--'}
+              {:else if player.isYou}
+                {player.isHost ? '0ms' : (p2pPing > 0 ? p2pPing + 'ms' : '--')}
               {:else}
                 {player.ping > 0 ? player.ping + 'ms' : '--'}
               {/if}
@@ -229,14 +236,12 @@
             {/if}
           </span>
         </div>
-        {#if serverPing > 0}
-          <div class="conn-row">
-            <span class="conn-label">Ping</span>
-            <span class="conn-value mono" style="color: {getPingColor(serverPing)}">
-              {serverPing}ms
-            </span>
-          </div>
-        {/if}
+        <div class="conn-row">
+          <span class="conn-label">P2P Ping</span>
+          <span class="conn-value mono" style="color: {getPingColor(p2pPing)}">
+            {p2pPing > 0 ? p2pPing + 'ms' : '--'}
+          </span>
+        </div>
       </div>
     </div>
 
