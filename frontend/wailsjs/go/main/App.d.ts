@@ -22,6 +22,8 @@ export function GetServerPing():Promise<number>;
 
 export function GetStatus():Promise<main.AppStatus>;
 
+export function IsBPFSetupDone():Promise<boolean>;
+
 export function JoinLobby(arg1:string):Promise<main.LobbyInfo>;
 
 export function JoinLobbyByCode(arg1:string):Promise<main.LobbyInfo>;

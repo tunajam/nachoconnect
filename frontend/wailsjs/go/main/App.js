@@ -42,6 +42,10 @@ export function GetStatus() {
   return window['go']['main']['App']['GetStatus']();
 }
 
+export function IsBPFSetupDone() {
+  return window['go']['main']['App']['IsBPFSetupDone']();
+}
+
 export function JoinLobby(arg1) {
   return window['go']['main']['App']['JoinLobby'](arg1);
 }

@@ -175,13 +175,28 @@ func (a *App) SetGamertag(tag string) error {
 
 // CheckPermissions checks if pcap permissions are available
 func (a *App) CheckPermissions() PermissionStatus {
+	// If BPF setup was already done, do a quick check
+	if perms.IsSetupDone() {
+		result := perms.CheckPcapPermissions()
+		if result.OK {
+			return PermissionStatus{OK: true, Message: result.Message}
+		}
+		// Setup was done but permissions lost (e.g. OS update) — need re-setup
+	}
 	result := perms.CheckPcapPermissions()
 	return PermissionStatus{OK: result.OK, Message: result.Message}
 }
 
-// RequestPermissions prompts for elevated permissions on macOS
+// RequestPermissions installs BPF permissions permanently (ChmodBPF approach).
+// Creates access_bpf group, adds user, installs LaunchDaemon for boot persistence.
+// Prompts for admin password once — never needs to ask again.
 func (a *App) RequestPermissions() error {
 	return perms.RequestElevatedPermissions(l2tunnel.BinaryPath)
+}
+
+// IsBPFSetupDone returns whether the one-time BPF setup has been completed
+func (a *App) IsBPFSetupDone() bool {
+	return perms.IsSetupDone()
 }
 
 // GetInterfaces returns available network interfaces via l2tunnel list
