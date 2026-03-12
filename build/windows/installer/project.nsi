@@ -70,6 +70,9 @@ Section "NachoConnect (required)" SecMain
     SetOutPath $INSTDIR
     !insertmacro wails.files
 
+    # Bundle l2tunnel binary
+    File "..\..\bin\l2tunnel.exe"
+
     # Bundle npcap installer
     SetOutPath "$INSTDIR\redist"
     File "..\..\bin\npcap-installer.exe"
@@ -111,6 +114,7 @@ Section "uninstall"
     !insertmacro wails.setShellContext
 
     RMDir /r "$AppData\${INFO_PROJECTNAME}.exe"
+    Delete "$INSTDIR\l2tunnel.exe"
     RMDir /r $INSTDIR
 
     Delete "$DESKTOP\${INFO_PRODUCTNAME}.lnk"

@@ -3,10 +3,10 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -o server ./cmd/server
+RUN CGO_ENABLED=0 go build -o hub ./cmd/hub
 
 FROM alpine:3.19
 RUN apk add --no-cache ca-certificates
-COPY --from=builder /app/server /server
-EXPOSE 8420
-CMD ["/server"]
+COPY --from=builder /app/hub /hub
+EXPOSE 9991/udp
+CMD ["/hub"]
