@@ -144,5 +144,10 @@ func generateID() string {
 }
 
 func generateCode() string {
-	return fmt.Sprintf("NACHO-%04d", rand.Intn(10000))
+	const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+	b := make([]byte, 4)
+	for i := range b {
+		b[i] = chars[rand.Intn(len(chars))]
+	}
+	return "NACHO-" + string(b)
 }

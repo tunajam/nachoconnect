@@ -93,12 +93,16 @@ jobs:
           echo "CGO_CFLAGS=-I${{ github.workspace }}\npcap-sdk\Include" >> $env:GITHUB_ENV
           echo "CGO_LDFLAGS=-L${{ github.workspace }}\npcap-sdk\Lib\x64" >> $env:GITHUB_ENV
 
-      - name: Download Npcap installer (OEM silent)
+      - name: Download Npcap installer
         shell: powershell
         run: |
-          # Note: Npcap OEM requires a license for redistribution.
-          # For open-source, we bundle a helper that prompts users to install from npcap.com
-          echo "Npcap must be installed separately by the user"
+          # Download free Npcap installer to bundle with the app
+          # Users will be prompted to install during NSIS setup if not already present
+          $NpcapUrl = "https://npcap.com/dist/npcap-1.80.exe"
+          $Dest = "build\bin\npcap-installer.exe"
+          New-Item -ItemType Directory -Force -Path "build\bin" | Out-Null
+          Invoke-WebRequest -Uri $NpcapUrl -OutFile $Dest
+          Write-Host "Downloaded Npcap installer to $Dest"
 
       - name: Compile l2tunnel (Windows)
         shell: bash
@@ -117,12 +121,13 @@ jobs:
       - name: Build Windows (amd64)
         run: wails build -platform windows/amd64 -nsis
 
-      - name: Bundle l2tunnel into Windows build
+      - name: Bundle l2tunnel and scripts into Windows build
         shell: bash
         run: |
           if [ -f lib/l2tunnel/l2tunnel.exe ]; then
             cp lib/l2tunnel/l2tunnel.exe build/bin/l2tunnel.exe
           fi
+          cp scripts/npcap-check.ps1 build/bin/npcap-check.ps1
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4

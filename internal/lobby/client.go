@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -194,6 +195,33 @@ func (c *Client) GetLobby(lobbyID string) (*ServerLobby, error) {
 
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, fmt.Errorf("lobby not found")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("server returned %d", resp.StatusCode)
+	}
+
+	var lobby ServerLobby
+	if err := json.NewDecoder(resp.Body).Decode(&lobby); err != nil {
+		return nil, fmt.Errorf("failed to decode lobby: %w", err)
+	}
+	return &lobby, nil
+}
+
+// JoinByCode resolves an invite code and joins the lobby in one step
+func (c *Client) JoinByCode(code string, gamertag string) (*ServerLobby, error) {
+	return c.JoinLobby(strings.ToUpper(strings.TrimSpace(code)), gamertag)
+}
+
+// GetByCode resolves an invite code to lobby info without joining
+func (c *Client) GetByCode(code string) (*ServerLobby, error) {
+	resp, err := c.httpClient.Get(c.baseURL + "/api/code/" + strings.ToUpper(strings.TrimSpace(code)))
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve code: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("lobby not found for code: %s", code)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("server returned %d", resp.StatusCode)

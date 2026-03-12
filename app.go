@@ -439,6 +439,11 @@ func (a *App) JoinLobby(code string) (*LobbyInfo, error) {
 	return &info, nil
 }
 
+// JoinLobbyByCode resolves an invite code and joins the lobby, auto-starting the tunnel
+func (a *App) JoinLobbyByCode(code string) (*LobbyInfo, error) {
+	return a.JoinLobby(code)
+}
+
 // autoTunnel starts l2tunnel connected to the hub via WebSocket bridge
 func (a *App) autoTunnel(sl *lobby.ServerLobby) {
 	a.mu.RLock()

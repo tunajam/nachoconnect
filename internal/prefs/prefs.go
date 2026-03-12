@@ -57,7 +57,13 @@ func (p *Preferences) SetGamertag(tag string) error {
 	return p.Save()
 }
 
+// configDirOverride is set during testing to use a temp directory.
+var configDirOverride string
+
 func configDir() (string, error) {
+	if configDirOverride != "" {
+		return configDirOverride, nil
+	}
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		home, err := os.UserHomeDir()
