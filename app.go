@@ -379,33 +379,56 @@ func (a *App) SelectInterface(name string) error {
 	a.discoverCancel = cancel
 	a.mu.Unlock()
 
-	discoveries, err := l2tunnel.Discover(discoverCtx, name)
+	discoveries, errCh, err := l2tunnel.Discover(discoverCtx, name)
 	if err != nil {
 		return fmt.Errorf("failed to start discovery on %s: %w", name, err)
 	}
 
-	go a.handleDiscoveries(discoveries)
+	go a.handleDiscoveries(discoveries, errCh)
 	return nil
 }
 
-func (a *App) handleDiscoveries(ch <-chan l2tunnel.Discovery) {
+func (a *App) handleDiscoveries(ch <-chan l2tunnel.Discovery, errCh <-chan error) {
 	seen := make(map[string]bool)
+	var candidates []string // non-Xbox broadcast sources, in case OUI check misses
+
 	for d := range ch {
 		if seen[d.SrcMAC] {
 			continue
 		}
 		seen[d.SrcMAC] = true
 
-		a.mu.Lock()
-		if !a.xboxFound {
-			a.xboxFound = true
-			a.xboxMAC = d.SrcMAC
-			a.status.XboxDetected = true
-			a.status.XboxMAC = d.SrcMAC
-			runtime.EventsEmit(a.ctx, "xbox:detected", d.SrcMAC)
+		if l2tunnel.IsLikelyXbox(d) {
+			a.mu.Lock()
+			if !a.xboxFound {
+				a.xboxFound = true
+				a.xboxMAC = d.SrcMAC
+				a.status.XboxDetected = true
+				a.status.XboxMAC = d.SrcMAC
+				runtime.EventsEmit(a.ctx, "xbox:detected", d.SrcMAC)
+			}
+			a.mu.Unlock()
+			runtime.EventsEmit(a.ctx, "status:update", a.GetStatus())
+		} else if strings.ToLower(d.DstMAC) == "ff:ff:ff:ff:ff:ff" {
+			candidates = append(candidates, d.SrcMAC)
 		}
-		a.mu.Unlock()
-		runtime.EventsEmit(a.ctx, "status:update", a.GetStatus())
+
+		// Emit scan activity so UI knows the capture is working
+		runtime.EventsEmit(a.ctx, "discover:activity", len(seen))
+	}
+
+	// If no Xbox OUI matched but we saw broadcast candidates, offer them
+	a.mu.RLock()
+	found := a.xboxFound
+	a.mu.RUnlock()
+	if !found && len(candidates) > 0 {
+		runtime.EventsEmit(a.ctx, "discover:candidates", candidates)
+	}
+
+	// Discovery channel closed — check if the subprocess reported an error
+	if err, ok := <-errCh; ok && err != nil {
+		category := l2tunnel.ClassifyDiscoverError(err.Error())
+		runtime.EventsEmit(a.ctx, "discover:error", category, err.Error())
 	}
 }
 

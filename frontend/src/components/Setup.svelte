@@ -13,6 +13,8 @@
   let showScanHint = false;
   let gamertag = '';
   let step = 'gamertag'; // gamertag | permissions | interface
+  let scanActivity = 0;
+  let candidates = [];
   let permissionsOK = true;
   let permMessage = '';
 
@@ -31,6 +33,12 @@
   onDestroy(() => {
     clearInterval(dotInterval);
     clearTimeout(scanTimeout);
+    if (window.runtime) {
+      window.runtime.EventsOff('xbox:detected');
+      window.runtime.EventsOff('discover:error');
+      window.runtime.EventsOff('discover:activity');
+      window.runtime.EventsOff('discover:candidates');
+    }
   });
 
   async function saveGamertag() {
@@ -83,6 +91,27 @@
         clearInterval(dotInterval);
         clearTimeout(scanTimeout);
       });
+
+      window.runtime.EventsOn('discover:error', (category, message) => {
+        scanning = false;
+        clearInterval(dotInterval);
+        clearTimeout(scanTimeout);
+        if (category === 'permissions') {
+          error = 'Packet capture permission denied. Go back and grant permissions, or try restarting the app.';
+        } else if (category === 'interface') {
+          error = `Network interface "${selectedInterface?.name}" is not available. Try selecting a different one.`;
+        } else {
+          error = `Xbox discovery failed: ${message}`;
+        }
+      });
+
+      window.runtime.EventsOn('discover:activity', (count) => {
+        scanActivity = count;
+      });
+
+      window.runtime.EventsOn('discover:candidates', (macs) => {
+        candidates = macs;
+      });
     }
   }
 
@@ -93,6 +122,8 @@
     xboxMAC = '';
     scanDots = '';
     showScanHint = false;
+    scanActivity = 0;
+    candidates = [];
     clearTimeout(scanTimeout);
     
     dotInterval = setInterval(() => {
@@ -205,6 +236,9 @@
               <div class="scan-indicator">
                 <span class="pulse"></span>
                 Scanning for Xbox{scanDots}
+                {#if scanActivity > 0}
+                  <span class="activity-count">({scanActivity} devices seen)</span>
+                {/if}
               </div>
             {/if}
           </button>
@@ -214,8 +248,25 @@
 
     {#if showScanHint && scanning && !xboxMAC}
       <div class="scan-hint">
-        <p>🤔 <strong>Not finding your Xbox?</strong> Make sure you're on the System Link screen in a game (like Halo 2). Your Xbox only broadcasts when it's looking for games.</p>
+        {#if scanActivity === 0}
+          <p>🤔 <strong>No network traffic detected.</strong> Check that your Xbox is connected to this network and the interface is correct. If on macOS, BPF permissions may not have applied — try restarting the app.</p>
+        {:else}
+          <p>🤔 <strong>Seeing traffic but no Xbox.</strong> Make sure you're on the System Link screen in a game (like Halo 2). Your Xbox only broadcasts when it's looking for games.</p>
+        {/if}
         <button class="btn-secondary" on:click={() => { showScanHint = false; selectInterface(selectedInterface); }}>Retry</button>
+      </div>
+    {/if}
+
+    {#if candidates.length > 0 && !xboxMAC && !scanning}
+      <div class="candidates-section">
+        <p><strong>Xbox not auto-detected</strong>, but these devices were broadcasting. If your Xbox has a custom MAC or modded NIC, select it manually:</p>
+        <div class="candidate-list">
+          {#each candidates as mac}
+            <button class="candidate-btn" on:click={() => { xboxMAC = mac; }}>
+              <span class="mono">{mac}</span>
+            </button>
+          {/each}
+        </div>
       </div>
     {/if}
 
@@ -535,5 +586,46 @@
   .scan-hint .btn-secondary {
     flex-shrink: 0;
     align-self: center;
+  }
+
+  .activity-count {
+    color: var(--text-muted);
+    font-size: 10px;
+    margin-left: 4px;
+  }
+
+  .candidates-section {
+    margin-top: 24px;
+    padding: 16px;
+    border: 1px solid var(--border);
+    background: var(--bg-card);
+    font-size: 13px;
+    color: var(--text-secondary);
+  }
+
+  .candidates-section p { margin: 0 0 12px; }
+
+  .candidate-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .candidate-btn {
+    display: flex;
+    align-items: center;
+    padding: 8px 12px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    cursor: pointer;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    text-align: left;
+  }
+
+  .candidate-btn:hover {
+    border-color: var(--green-dim);
+    background: var(--green-glow);
   }
 </style>
