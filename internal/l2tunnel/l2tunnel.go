@@ -135,26 +135,47 @@ func parseListOutput(output string) []Interface {
 
 // Discover runs `l2tunnel discover <iface>` and streams discovered MAC addresses.
 // It runs until ctx is cancelled. Results are sent on the returned channel.
-func Discover(ctx context.Context, iface string) (<-chan Discovery, error) {
+// The returned error channel receives at most one error if the subprocess fails.
+func Discover(ctx context.Context, iface string) (<-chan Discovery, <-chan error, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(ctx, BinaryPath, "discover", iface)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		cancel()
-		return nil, fmt.Errorf("failed to get stdout: %w", err)
+		return nil, nil, fmt.Errorf("failed to get stdout: %w", err)
+	}
+
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		cancel()
+		return nil, nil, fmt.Errorf("failed to get stderr: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
 		cancel()
-		return nil, fmt.Errorf("l2tunnel discover failed to start: %w", err)
+		return nil, nil, fmt.Errorf("l2tunnel discover failed to start: %w", err)
 	}
 
 	ch := make(chan Discovery, 32)
+	errCh := make(chan error, 1)
+
+	// Collect stderr in background
+	var stderrLines []string
+	var stderrMu sync.Mutex
+	go func() {
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			stderrMu.Lock()
+			stderrLines = append(stderrLines, scanner.Text())
+			stderrMu.Unlock()
+		}
+	}()
+
 	go func() {
 		defer close(ch)
+		defer close(errCh)
 		defer cancel()
-		defer cmd.Wait()
 
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
@@ -173,9 +194,24 @@ func Discover(ctx context.Context, iface string) (<-chan Discovery, error) {
 				}
 			}
 		}
+
+		// Process exited — check for errors
+		waitErr := cmd.Wait()
+		if waitErr != nil && ctx.Err() == nil {
+			// Process failed and it wasn't because we cancelled it
+			stderrMu.Lock()
+			stderrOut := strings.Join(stderrLines, "\n")
+			stderrMu.Unlock()
+
+			if stderrOut != "" {
+				errCh <- fmt.Errorf("l2tunnel discover failed: %s", stderrOut)
+			} else {
+				errCh <- fmt.Errorf("l2tunnel discover exited unexpectedly: %w", waitErr)
+			}
+		}
 	}()
 
-	return ch, nil
+	return ch, errCh, nil
 }
 
 // StartTunnel starts an l2tunnel tunnel subprocess with the given config
